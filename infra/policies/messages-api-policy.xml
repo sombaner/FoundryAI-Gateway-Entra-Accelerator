@@ -1,0 +1,108 @@
+<!--
+  Claude Governance MVP — /v1/messages operation policy
+  Source of truth: mvp-architecture/Claude-Governance-MVP-Architecture.docx, Section 5.3
+  Order matters. Do not remove or reorder steps without updating the design doc.
+  {{entra-tenant-id}}, {{gateway-api-client-id}}, {{cowork-client-id}},
+  {{approved-model-name}}, {{foundry-api-key}} are APIM named values, resolved
+  by APIM at request time — do not replace with literals.
+
+  BACKEND AUTH: the Foundry/Anthropic resource lives in a separate Entra
+  tenant with no federation configured, so managed-identity auth to the
+  backend is not possible. {{foundry-api-key}} is a Key-Vault-backed secret
+  named value (modules/keyvault.bicep + modules/apim-policy.bicep) — the raw
+  key is never sent by the client and never stored in this file.
+-->
+<policies>
+  <inbound>
+    <base />
+
+    <!-- 5.3.1 Entra access-token validation -->
+    <validate-azure-ad-token tenant-id="{{entra-tenant-id}}"
+        header-name="Authorization" failed-validation-httpcode="401"
+        failed-validation-error-message="Missing or invalid access token."
+        output-token-variable-name="gatewayJwt">
+      <audiences>
+        <audience>{{gateway-api-client-id}}</audience>
+      </audiences>
+      <client-application-ids>
+        <application-id>{{cowork-client-id}}</application-id>
+      </client-application-ids>
+      <required-claims>
+        <claim name="scp" match="any" separator=" ">
+          <value>Inference.Invoke</value>
+        </claim>
+      </required-claims>
+    </validate-azure-ad-token>
+    <set-variable name="userOid" value="@{
+      var jwt = (Jwt)context.Variables[&quot;gatewayJwt&quot;];
+      return jwt.Claims.GetValueOrDefault(&quot;oid&quot;, &quot;&quot;);
+    }" />
+
+        <!-- 5.3.2 Model allowlist ({{approved-model-name}} is a comma-separated
+          list of approved model deployment names, no spaces) -->
+    <set-variable name="requestedModel" value="@{
+      var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+      return (string)body[&quot;model&quot;] ?? &quot;&quot;;
+    }" />
+    <choose>
+      <when condition="@{
+          var approved = &quot;{{approved-model-name}}&quot;.Split(',');
+          var requested = (string)context.Variables[&quot;requestedModel&quot;];
+          return !approved.Contains(requested);
+      }">
+        <return-response>
+          <set-status code="403" reason="Model Not Entitled" />
+          <set-body>{"type":"error","error":{"type":"permission_error",
+            "message":"The requested model is not approved for this gateway."}}</set-body>
+        </return-response>
+      </when>
+    </choose>
+
+    <!-- 5.3.3 Per-user token rate + monthly quota -->
+    <llm-token-limit counter-key="@(&quot;user:&quot; + (string)context.Variables[&quot;userOid&quot;])"
+        tokens-per-minute="30000" token-quota="5000000" token-quota-period="Monthly"
+        estimate-prompt-tokens="true" retry-after-header-name="Retry-After"
+        remaining-tokens-header-name="x-user-tpm-remaining"
+        remaining-quota-tokens-header-name="x-user-quota-remaining"
+        tokens-consumed-header-name="x-tokens-consumed" />
+
+    <!-- 5.3.4 Low-cardinality token metric + metadata-only trace -->
+    <llm-emit-token-metric namespace="EnterpriseAI">
+      <dimension name="API ID" />
+      <dimension name="Backend ID" />
+    </llm-emit-token-metric>
+    <trace source="ai-gateway-mvp" severity="information">
+      <message>@("ai_gateway_request")</message>
+      <metadata name="correlationId" value="@(context.RequestId.ToString())" />
+      <metadata name="userOid" value="@((string)context.Variables[&quot;userOid&quot;])" />
+      <metadata name="model" value="@((string)context.Variables[&quot;requestedModel&quot;])" />
+    </trace>
+
+    <!-- 5.3.5 API-key backend call to Foundry (cross-tenant resource; managed
+         identity is not possible, so the key is injected from a Key Vault-
+         backed named value instead of being forwarded from the client) -->
+    <set-backend-service backend-id="foundry-claude-pilot" />
+    <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+    <set-header name="x-api-key" exists-action="override">
+      <value>{{foundry-api-key}}</value>
+    </set-header>
+
+    <!-- 5.4 Streaming: forward Anthropic headers unchanged -->
+    <set-header name="anthropic-version" exists-action="skip">
+      <value>@(context.Request.Headers.GetValueOrDefault("anthropic-version",""))</value>
+    </set-header>
+    <set-header name="anthropic-beta" exists-action="skip">
+      <value>@(context.Request.Headers.GetValueOrDefault("anthropic-beta",""))</value>
+    </set-header>
+  </inbound>
+  <backend>
+    <!-- 5.4 Streaming: no SSE buffering, generous forward timeout for long-running calls -->
+    <forward-request timeout="{{backend-forward-timeout}}" buffer-response="false" />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>

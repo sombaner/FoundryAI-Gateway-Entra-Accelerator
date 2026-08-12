@@ -1,0 +1,57 @@
+<!--
+  Claude Governance MVP — GET /v1/models operation policy
+  Optional client-discovery endpoint. Does not call the Foundry backend
+  (Anthropic has no public /v1/models list API) — it simply returns a
+  static JSON document describing the models approved for this
+  gateway ({{approved-model-name}}), still gated by the same Entra token
+  validation used on /v1/messages so it is not an unauthenticated probe.
+-->
+<policies>
+  <inbound>
+    <base />
+    <validate-azure-ad-token tenant-id="{{entra-tenant-id}}"
+        header-name="Authorization" failed-validation-httpcode="401"
+        failed-validation-error-message="Missing or invalid access token.">
+      <audiences>
+        <audience>{{gateway-api-client-id}}</audience>
+      </audiences>
+      <client-application-ids>
+        <application-id>{{cowork-client-id}}</application-id>
+      </client-application-ids>
+      <required-claims>
+        <claim name="scp" match="any" separator=" ">
+          <value>Inference.Invoke</value>
+        </claim>
+      </required-claims>
+    </validate-azure-ad-token>
+    <return-response>
+      <set-status code="200" reason="OK" />
+      <set-header name="Content-Type" exists-action="override">
+        <value>application/json</value>
+      </set-header>
+      <set-body>@{
+        var approved = &quot;{{approved-model-name}}&quot;.Split(',');
+        var models = new JArray();
+        foreach (var m in approved) {
+          models.Add(new JObject(
+            new JProperty(&quot;id&quot;, m),
+            new JProperty(&quot;object&quot;, &quot;model&quot;)
+          ));
+        }
+        return new JObject(
+          new JProperty(&quot;object&quot;, &quot;list&quot;),
+          new JProperty(&quot;data&quot;, models)
+        ).ToString();
+      }</set-body>
+    </return-response>
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>

@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadContent</key>
+      <dict>
+        <key>com.anthropic.claudefordesktop</key>
+        <dict>
+          <key>Forced</key>
+          <array>
+            <dict>
+              <key>mcx_preference_settings</key>
+              <dict>
+                <key>inference</key>
+                <dict>
+                  <key>provider</key>
+                  <string>gateway</string>
+                  <key>baseUrl</key>
+                  <string>https://apim-claude-gov-pilot.azure-api.net</string>
+                  <key>credential</key>
+                  <dict>
+                    <key>kind</key>
+                    <string>interactive</string>
+                    <key>authFlow</key>
+                    <string>browser</string>
+                    <key>oidc</key>
+                    <dict>
+                      <key>clientId</key>
+                      <string>1c27492c-f972-433c-8327-26d95dd54a18</string>
+                      <key>issuer</key>
+                      <string>https://login.microsoftonline.com/fc42bad7-5f0e-4bfe-af0a-122957fa475e/v2.0</string>
+                      <key>bearerTokenType</key>
+                      <string>access_token</string>
+                      <key>scopes</key>
+                      <string>api://7ed913c5-2aa0-4aa0-be7e-43bdbc6c8e2c/Inference.Invoke</string>
+                      <key>appendOfflineAccess</key>
+                      <true/>
+                    </dict>
+                  </dict>
+                </dict>
+              </dict>
+            </dict>
+          </array>
+        </dict>
+      </dict>
+      <key>PayloadDisplayName</key>
+      <string>Claude Governance Gateway Preferences</string>
+      <key>PayloadIdentifier</key>
+      <string>com.anthropic.claudefordesktop.gateway.preferences</string>
+      <key>PayloadType</key>
+      <string>com.apple.ManagedClient.preferences</string>
+      <key>PayloadUUID</key>
+      <string>F5FA89A5-E3F3-4642-8A79-32AB34E84138</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+    </dict>
+  </array>
+  <key>PayloadDescription</key>
+  <string>Routes Claude Desktop inference through the APIM Claude Governance gateway using native interactive Entra OIDC.</string>
+  <key>PayloadDisplayName</key>
+  <string>Claude Governance Gateway</string>
+  <key>PayloadIdentifier</key>
+  <string>com.anthropic.claudefordesktop.gateway</string>
+  <key>PayloadOrganization</key>
+  <string>Claude Governance MVP</string>
+  <key>PayloadRemovalDisallowed</key>
+  <false/>
+  <key>PayloadScope</key>
+  <string>User</string>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>8B8D37A7-723D-4B71-9836-3EE65B9CEB17</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+</dict>
+</plist>

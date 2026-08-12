@@ -1,0 +1,8 @@
+# Local Azure and Foundry credentials — copy from *.env.example templates,
+# fill in real values, and never commit them.
+*.env
+
+# Deployment-specific Bicep parameter files (contain tenant/subscription/environment
+# values via readEnvironmentVariable()). Keep *.bicepparam out of source control;
+# only the .bicep templates themselves are tracked.
+*.bicepparam
