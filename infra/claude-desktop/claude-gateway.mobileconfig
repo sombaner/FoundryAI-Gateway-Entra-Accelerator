@@ -19,7 +19,7 @@
                   <key>provider</key>
                   <string>gateway</string>
                   <key>baseUrl</key>
-                  <string>https://apim-claude-gov-pilot.azure-api.net</string>
+                  <string>https://<apimname></string>
                   <key>credential</key>
                   <dict>
                     <key>kind</key>
@@ -29,13 +29,13 @@
                     <key>oidc</key>
                     <dict>
                       <key>clientId</key>
-                      <string>1c27492c-f972-433c-8327-26d95dd54a18</string>
+                      <string><clientId></string>
                       <key>issuer</key>
-                      <string>https://login.microsoftonline.com/fc42bad7-5f0e-4bfe-af0a-122957fa475e/v2.0</string>
+                      <string>https://login.microsoftonline.com/<clientId>/v2.0</string>
                       <key>bearerTokenType</key>
                       <string>access_token</string>
                       <key>scopes</key>
-                      <string>api://7ed913c5-2aa0-4aa0-be7e-43bdbc6c8e2c/Inference.Invoke</string>
+                      <string>api://<clientId>/Inference.Invoke</string>
                       <key>appendOfflineAccess</key>
                       <true/>
                     </dict>
@@ -53,7 +53,7 @@
       <key>PayloadType</key>
       <string>com.apple.ManagedClient.preferences</string>
       <key>PayloadUUID</key>
-      <string>F5FA89A5-E3F3-4642-8A79-32AB34E84138</string>
+      <string><payloadid></string>
       <key>PayloadVersion</key>
       <integer>1</integer>
     </dict>
@@ -73,7 +73,7 @@
   <key>PayloadType</key>
   <string>Configuration</string>
   <key>PayloadUUID</key>
-  <string>8B8D37A7-723D-4B71-9836-3EE65B9CEB17</string>
+  <string>'<Somaid>'</string>
   <key>PayloadVersion</key>
   <integer>1</integer>
 </dict>
