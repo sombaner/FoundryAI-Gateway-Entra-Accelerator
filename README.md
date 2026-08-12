@@ -1,7 +1,5 @@
 # FoundryAI Gateway + Entra Accelerator
 
-> **Status: PILOT DEPLOYED** — APIM `apim-claude-gov-pilot` is live in resource group `rg-claude-governance` (Azure subscription `0b17562a-418b-4922-acd0-9a155008a84d`, region `eastus2`).
-
 ---
 
 ## Purpose
