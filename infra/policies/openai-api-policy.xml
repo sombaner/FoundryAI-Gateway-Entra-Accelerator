@@ -1,14 +1,15 @@
 <!--
-  AI Gateway — POST /v1/messages operation policy
+  AI Gateway — POST /openai/v1/chat/completions operation policy
 
-  Order matters. Do not remove or reorder steps without updating the guide.
+  Same governance sequence as the Claude surface, applied to the OpenAI wire
+  format. Kept as a separate operation because Anthropic Messages and OpenAI
+  Chat Completions request/response schemas are not interchangeable.
+
   {{entra-tenant-id}}, {{gateway-api-client-id}}, {{cowork-client-id}},
-  {{approved-claude-models}}, {{backend-forward-timeout}} are APIM named
+  {{approved-openai-models}}, {{backend-forward-timeout}} are APIM named
   values resolved at request time — do not replace with literals.
 
-  BACKEND AUTH: APIM's system-assigned managed identity holds Cognitive
-  Services User on the same-tenant Foundry account. No API key exists in this
-  stack, in Key Vault, or on any client.
+  BACKEND AUTH: APIM's system-assigned managed identity. No API keys.
 -->
 <policies>
   <inbound>
@@ -39,14 +40,14 @@
       return jwt.Claims.GetValueOrDefault(&quot;oid&quot;, &quot;&quot;);
     }" />
 
-    <!-- 2. Model allowlist ({{approved-claude-models}} is comma-separated, no spaces) -->
+    <!-- 2. Model allowlist. Admission decision, kept ahead of every other control. -->
     <set-variable name="requestedModel" value="@{
       var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
       return (string)body[&quot;model&quot;] ?? &quot;&quot;;
     }" />
     <choose>
       <when condition="@{
-          var approved = &quot;{{approved-claude-models}}&quot;.Split(',');
+          var approved = &quot;{{approved-openai-models}}&quot;.Split(',');
           var requested = (string)context.Variables[&quot;requestedModel&quot;];
           return !approved.Contains(requested);
       }">
@@ -55,7 +56,7 @@
           <set-header name="Content-Type" exists-action="override">
             <value>application/json</value>
           </set-header>
-          <set-body>{"type":"error","error":{"type":"permission_error","message":"The requested model is not approved for this gateway."}}</set-body>
+          <set-body>{"error":{"code":"permission_error","message":"The requested model is not approved for this gateway."}}</set-body>
         </return-response>
       </when>
     </choose>
@@ -76,7 +77,7 @@
          content-safety-check policy fragment. -->
     <include-fragment fragment-id="content-safety-check" />
 
-    <!-- 5. Per-user token rate + daily quota -->
+    <!-- 5. Per-user token rate + daily quota, keyed on the validated oid claim. -->
     <llm-token-limit counter-key="@(&quot;user:&quot; + (string)context.Variables[&quot;userOid&quot;])"
         tokens-per-minute="100000" token-quota="5000000" token-quota-period="Daily"
         estimate-prompt-tokens="true" retry-after-header-name="Retry-After"
@@ -98,27 +99,18 @@
 
     <!-- 7. Managed-identity backend call. Client-supplied credentials are stripped
          so nothing a caller sends can influence backend authentication. -->
-    <set-backend-service backend-id="foundry-claude" />
+    <set-backend-service backend-id="foundry-openai" />
     <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
-    <set-header name="x-api-key" exists-action="delete" />
     <set-header name="api-key" exists-action="delete" />
+    <set-header name="x-api-key" exists-action="delete" />
     <authentication-managed-identity resource="https://cognitiveservices.azure.com" />
-
-    <!-- 8. Streaming: forward Anthropic protocol headers unchanged -->
-    <set-header name="anthropic-version" exists-action="skip">
-      <value>@(context.Request.Headers.GetValueOrDefault("anthropic-version",""))</value>
-    </set-header>
-    <set-header name="anthropic-beta" exists-action="skip">
-      <value>@(context.Request.Headers.GetValueOrDefault("anthropic-beta",""))</value>
-    </set-header>
   </inbound>
   <backend>
-    <!-- Streaming: no SSE buffering, generous forward timeout for long-running calls -->
     <forward-request timeout="{{backend-forward-timeout}}" buffer-response="false" />
   </backend>
   <outbound>
     <base />
-    <!-- 9. Store the response for the semantic-cache lookup in step 3. -->
+    <!-- 8. Store the response for the semantic-cache lookup in step 3. -->
     <llm-semantic-cache-store duration="300" />
   </outbound>
   <on-error>

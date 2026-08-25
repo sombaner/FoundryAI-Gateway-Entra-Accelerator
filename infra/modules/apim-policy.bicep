@@ -1,33 +1,36 @@
-// Claude Governance MVP — API, product, policy, and backend module
-// Creates the /v1/messages (and optional /v1/models) API surface, the
-// foundry-claude-pilot backend, the claude-pilot product, and applies the
-// policy XML to the messages operation.
+// AI Gateway — API, backend, and policy module
+// Creates two governed API surfaces on one APIM instance and one hostname:
 //
-// AUTH NOTE: the Foundry/Anthropic resource for this pilot lives in a
-// separate Entra tenant with no federation configured, so managed-identity
-// auth to the backend is not possible (see modules/rbac.bicep, now unused).
-// Instead, the API key is stored in Key Vault (modules/keyvault.bicep) and
-// injected here via a Key-Vault-backed named value — never sent by the
-// client, never stored in Bicep parameters or ARM history.
+//   POST /v1/messages                -> Foundry Anthropic (claude-opus-5, claude-sonnet-5)
+//   GET  /v1/models                  -> static, Entra-gated discovery
+//   POST /openai/v1/chat/completions  -> Foundry OpenAI (gpt-5.4)
 //
-// Section 5.2 / 5.3 / 9.2 of mvp-architecture/Claude-Governance-MVP-Architecture.docx
+// Anthropic Messages and OpenAI Chat Completions are different wire formats, so
+// they cannot share one operation; they share identity, policy, telemetry, and
+// the gateway hostname instead.
+//
+// AUTH: every backend call uses the APIM system-assigned managed identity via
+// authentication-managed-identity in the policy XML. No API keys anywhere.
 
 @description('Name of the existing APIM service to attach these resources to.')
 param apimServiceName string
 
-@description('Existing Foundry Anthropic Messages API base URL, up to and including the /v1 segment, e.g. https://<foundry-resource>.services.ai.azure.com/anthropic/v1 (APIM appends the operation path, /messages, to this base). Foundry is pre-existing and is never created/modified by this template.')
-param foundryEndpointUrl string
+@description('Foundry Anthropic Messages base URL, up to and including /v1. APIM appends the operation path (/messages).')
+param foundryAnthropicEndpoint string
 
-@description('Key Vault URI (with trailing slash) holding the Foundry API key secret. Supplied by the keyvault.bicep module output.')
-param keyVaultUri string
+@description('Foundry OpenAI base URL, up to and including /openai. APIM appends the operation path (/v1/chat/completions).')
+param foundryOpenAiEndpoint string
 
-@description('Name of the Key Vault secret holding the Foundry API key.')
-param foundryApiKeySecretName string = 'foundry-api-key'
+@description('Azure AI Content Safety data-plane endpoint used by the llm-content-safety policy.')
+param contentSafetyEndpoint string
 
-@description('Comma-separated (no spaces) list of model deployment names that Claude Desktop/Code may send in the "model" field to be allowed through the gateway allowlist.')
-param approvedModelName string
+@description('Comma-separated (no spaces) allowlist of Anthropic model deployment names accepted on /v1/messages.')
+param approvedClaudeModels string
 
-@description('APIM forward timeout, in seconds, for long-running inference/streaming calls (5-10 minutes per Section 5.4).')
+@description('Comma-separated (no spaces) allowlist of OpenAI model deployment names accepted on /openai/v1/chat/completions.')
+param approvedOpenAiModels string
+
+@description('APIM forward timeout, in seconds, for long-running/streaming inference calls.')
 @minValue(60)
 @maxValue(600)
 param backendForwardTimeoutSeconds int = 300
@@ -35,35 +38,36 @@ param backendForwardTimeoutSeconds int = 300
 @description('Whether to also expose GET /v1/models for client discovery.')
 param includeModelsOperation bool = true
 
+@description('Whether the content-safety-check fragment enforces llm-content-safety. Leave false until backend managed-identity auth to Content Safety is proven, since the policy fails closed.')
+param enableContentSafety bool = false
+
+@description('Foundry embeddings deployment name, used by llm-semantic-cache-lookup/store to score prompt similarity.')
+param embeddingsDeploymentName string = 'text-embedding-3-small'
+
+@description('External cache connection string (Azure Managed Redis with RediSearch) backing semantic caching.')
+@secure()
+param semanticCacheConnectionString string
+
 resource apim 'Microsoft.ApiManagement/service@2024-05-01' existing = {
   name: apimServiceName
 }
 
-// Key-Vault-backed secret named value. APIM resolves this via its
-// system-assigned managed identity, which modules/keyvault.bicep grants
-// "Key Vault Secrets User" on the vault. The secret itself is set out-of-band
-// with `az keyvault secret set` (see DEPLOYMENT-GUIDE.md) — it is never a
-// Bicep parameter, so it never appears in ARM deployment history.
-resource nvFoundryApiKey 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = {
+resource nvApprovedClaudeModels 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = {
   parent: apim
-  name: 'foundry-api-key'
+  name: 'approved-claude-models'
   properties: {
-    displayName: 'foundry-api-key'
-    secret: true
-    keyVault: {
-      secretIdentifier: '${keyVaultUri}secrets/${foundryApiKeySecretName}'
-    }
+    displayName: 'approved-claude-models'
+    value: approvedClaudeModels
+    secret: false
   }
 }
 
-// Single-model allowlist value, referenced by messages-api-policy.xml as
-// {{approved-model-name}} instead of a hardcoded literal.
-resource nvApprovedModelName 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = {
+resource nvApprovedOpenAiModels 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = {
   parent: apim
-  name: 'approved-model-name'
+  name: 'approved-openai-models'
   properties: {
-    displayName: 'approved-model-name'
-    value: approvedModelName
+    displayName: 'approved-openai-models'
+    value: approvedOpenAiModels
     secret: false
   }
 }
@@ -81,18 +85,126 @@ resource nvBackendForwardTimeout 'Microsoft.ApiManagement/service/namedValues@20
   }
 }
 
-// Backend pointing at the existing (cross-tenant) Foundry Anthropic endpoint.
-// Auth is via the foundry-api-key named value above (Key Vault-backed),
-// injected as the x-api-key header in messages-api-policy.xml.
-resource foundryBackend 'Microsoft.ApiManagement/service/backends@2024-05-01' = {
+// Backends pointing at the same-tenant Foundry account. Auth is the APIM
+// managed identity, applied in the policy XML via authentication-managed-identity.
+resource foundryClaudeBackend 'Microsoft.ApiManagement/service/backends@2024-05-01' = {
   parent: apim
-  name: 'foundry-claude-pilot'
+  name: 'foundry-claude'
   properties: {
     protocol: 'http'
-    url: foundryEndpointUrl
+    url: foundryAnthropicEndpoint
+    description: 'Microsoft Foundry Anthropic Messages endpoint (claude-opus-5, claude-sonnet-5).'
     tls: {
       validateCertificateChain: true
       validateCertificateName: true
+    }
+    circuitBreaker: {
+      rules: [
+        {
+          name: 'claude-transient-failures'
+          failureCondition: {
+            count: 3
+            interval: 'PT1M'
+            statusCodeRanges: [
+              {
+                min: 500
+                max: 599
+              }
+            ]
+          }
+          tripDuration: 'PT1M'
+          acceptRetryAfter: true
+        }
+      ]
+    }
+  }
+}
+
+resource foundryOpenAiBackend 'Microsoft.ApiManagement/service/backends@2024-05-01' = {
+  parent: apim
+  name: 'foundry-openai'
+  properties: {
+    protocol: 'http'
+    url: foundryOpenAiEndpoint
+    description: 'Microsoft Foundry OpenAI endpoint (gpt-5.4).'
+    tls: {
+      validateCertificateChain: true
+      validateCertificateName: true
+    }
+    circuitBreaker: {
+      rules: [
+        {
+          name: 'openai-transient-failures'
+          failureCondition: {
+            count: 3
+            interval: 'PT1M'
+            statusCodeRanges: [
+              {
+                min: 500
+                max: 599
+              }
+            ]
+          }
+          tripDuration: 'PT1M'
+          acceptRetryAfter: true
+        }
+      ]
+    }
+  }
+}
+
+// Embeddings deployment used by llm-semantic-cache-lookup/store to score prompt
+// similarity. Managed-identity auth, same pattern as the content-safety backend.
+resource foundryEmbeddingsBackend 'Microsoft.ApiManagement/service/backends@2024-05-01' = {
+  parent: apim
+  name: 'foundry-embeddings'
+  properties: {
+    protocol: 'http'
+    url: '${foundryOpenAiEndpoint}/deployments/${embeddingsDeploymentName}/embeddings'
+    description: 'Foundry OpenAI-compatible embeddings deployment (${embeddingsDeploymentName}), used for semantic-cache similarity scoring.'
+    tls: {
+      validateCertificateChain: true
+      validateCertificateName: true
+    }
+    credentials: {
+      authorization: {
+        scheme: 'ManagedIdentity'
+        parameter: 'https://cognitiveservices.azure.com'
+      }
+    }
+  }
+}
+
+// Azure Managed Redis (RediSearch) onboarded as an APIM external cache, used by
+// llm-semantic-cache-lookup/store on both operations.
+resource semanticCache 'Microsoft.ApiManagement/service/caches@2024-05-01' = {
+  parent: apim
+  name: 'semantic-cache'
+  properties: {
+    connectionString: semanticCacheConnectionString
+    useFromLocation: 'default'
+    description: 'Azure Managed Redis (RediSearch) backing llm-semantic-cache-lookup/store.'
+  }
+}
+
+// Content Safety is reached with the APIM managed identity; the audience is the
+// generic Cognitive Services resource ID, not the account-specific hostname.
+resource contentSafetyBackend 'Microsoft.ApiManagement/service/backends@2024-05-01' = {
+  parent: apim
+  name: 'content-safety-backend'
+  properties: {
+    protocol: 'http'
+    url: contentSafetyEndpoint
+    description: 'Azure AI Content Safety, called by the llm-content-safety policy.'
+    tls: {
+      validateCertificateChain: true
+      validateCertificateName: true
+    }
+    credentials: {
+      authorization: {
+        scheme: 'ManagedIdentity'
+        parameter: 'https://cognitiveservices.azure.com'
+      }
     }
   }
 }
@@ -100,6 +212,22 @@ resource foundryBackend 'Microsoft.ApiManagement/service/backends@2024-05-01' = 
 // Defined "blank" (no imported spec) and built up operation-by-operation below.
 // Import a full Anthropic Messages OpenAPI spec later via the portal or CLI
 // if a richer developer-portal experience is needed; not required for MVP.
+// Single toggle point for prompt moderation, included by both operation policies.
+resource contentSafetyFragment 'Microsoft.ApiManagement/service/policyFragments@2024-05-01' = {
+  parent: apim
+  name: 'content-safety-check'
+  properties: {
+    description: 'Prompt moderation step shared by the Claude and OpenAI operations.'
+    format: 'rawxml'
+    value: enableContentSafety
+      ? loadTextContent('../policies/fragment-content-safety-enabled.xml')
+      : loadTextContent('../policies/fragment-content-safety-disabled.xml')
+  }
+  dependsOn: [
+    contentSafetyBackend
+  ]
+}
+
 resource messagesApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
   parent: apim
   name: 'anthropic-messages-api'
@@ -136,43 +264,89 @@ resource modelsOperation 'Microsoft.ApiManagement/service/apis/operations@2024-0
   }
 }
 
-// Policy sequence from Section 5.3, applied at the operation level so it
-// only governs /v1/messages (not the whole API).
+resource openAiApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
+  parent: apim
+  name: 'openai-chat-api'
+  properties: {
+    displayName: 'OpenAI Chat Completions API (AI Gateway)'
+    description: 'Governed passthrough of the OpenAI Chat Completions API to the Foundry-hosted gpt-5.4 deployment, under the same identity and policy boundary as the Claude surface.'
+    path: 'openai'
+    protocols: [
+      'https'
+    ]
+    subscriptionRequired: false
+  }
+}
+
+resource chatCompletionsOperation 'Microsoft.ApiManagement/service/apis/operations@2024-05-01' = {
+  parent: openAiApi
+  name: 'post-chat-completions'
+  properties: {
+    displayName: 'Create Chat Completion'
+    method: 'POST'
+    urlTemplate: '/v1/chat/completions'
+    description: 'OpenAI Chat Completions passthrough governed by the same Entra, content-safety, and quota sequence as the Claude surface.'
+  }
+}
+
+// Policy sequence applied at operation level so each wire format gets its own
+// body parsing and allowlist while sharing the identity/telemetry design.
 resource messagesOperationPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = {
   parent: messagesOperation
   name: 'policy'
   properties: {
-    format: 'xml'
+    format: 'rawxml'
     value: loadTextContent('../policies/messages-api-policy.xml')
   }
   dependsOn: [
-    foundryBackend
+    foundryClaudeBackend
+    contentSafetyBackend
+    contentSafetyFragment
     nvBackendForwardTimeout
-    nvFoundryApiKey
-    nvApprovedModelName
+    nvApprovedClaudeModels
+    foundryEmbeddingsBackend
+    semanticCache
   ]
 }
 
-// Discovery-only operation policy: Entra-gated static JSON, no backend call
-// (Anthropic has no public /v1/models list API).
+// Discovery-only operation policy: Entra-gated static JSON, no backend call.
 resource modelsOperationPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = if (includeModelsOperation) {
   parent: modelsOperation
   name: 'policy'
   properties: {
-    format: 'xml'
+    format: 'rawxml'
     value: loadTextContent('../policies/models-api-policy.xml')
   }
   dependsOn: [
-    nvApprovedModelName
+    nvApprovedClaudeModels
+    nvApprovedOpenAiModels
+  ]
+}
+
+resource chatCompletionsOperationPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = {
+  parent: chatCompletionsOperation
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/openai-api-policy.xml')
+  }
+  dependsOn: [
+    foundryOpenAiBackend
+    contentSafetyBackend
+    contentSafetyFragment
+    nvBackendForwardTimeout
+    nvApprovedOpenAiModels
+    foundryEmbeddingsBackend
+    semanticCache
   ]
 }
 
 resource product 'Microsoft.ApiManagement/service/products@2024-05-01' = {
   parent: apim
-  name: 'claude-pilot'
+  name: 'enterprise-ai'
   properties: {
-    displayName: 'Claude Desktop Pilot'
-    description: 'Product grouping the governed Anthropic Messages API for the Claude Desktop pilot group.'
+    displayName: 'Enterprise AI'
+    description: 'Product grouping the governed Claude and OpenAI surfaces for the pilot group.'
     subscriptionRequired: false
     state: 'published'
   }
@@ -183,8 +357,19 @@ resource productApiLink 'Microsoft.ApiManagement/service/products/apis@2024-05-0
   name: messagesApi.name
 }
 
+resource productOpenAiApiLink 'Microsoft.ApiManagement/service/products/apis@2024-05-01' = {
+  parent: product
+  name: openAiApi.name
+}
+
 @description('Resource ID of the anthropic-messages-api API.')
 output messagesApiId string = messagesApi.id
 
-@description('Backend ID used by the policy set-backend-service step.')
-output backendId string = foundryBackend.name
+@description('Resource ID of the openai-chat-api API.')
+output openAiApiId string = openAiApi.id
+
+@description('Backend ID used by the Claude surface.')
+output backendId string = foundryClaudeBackend.name
+
+@description('Backend ID used by the OpenAI surface.')
+output openAiBackendId string = foundryOpenAiBackend.name

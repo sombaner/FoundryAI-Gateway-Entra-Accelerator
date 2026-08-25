@@ -1,0 +1,21 @@
+<!--
+  Content safety check — ENABLED variant.
+
+  Deployed as the APIM policy fragment "content-safety-check" and included by
+  both the Claude and OpenAI operation policies, so prompt moderation can be
+  toggled in one place without editing either operation policy.
+
+  Developer-coding thresholds: Violence/SelfHarm are relaxed because stack
+  traces, security tooling, and crash discussion trigger false positives for an
+  authenticated staff audience. Hate/Sexual stay at the stricter default.
+-->
+<fragment>
+  <llm-content-safety backend-id="content-safety-backend" shield-prompt="true">
+    <categories output-type="EightSeverityLevels">
+      <category name="Hate" threshold="4" />
+      <category name="SelfHarm" threshold="6" />
+      <category name="Sexual" threshold="4" />
+      <category name="Violence" threshold="6" />
+    </categories>
+  </llm-content-safety>
+</fragment>

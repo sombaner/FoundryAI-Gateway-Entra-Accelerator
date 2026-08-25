@@ -1,24 +1,13 @@
-// Claude Governance MVP — RBAC module
+// AI Gateway — RBAC module
 // Grants the APIM system-assigned managed identity a least-privilege role on
 // the existing Microsoft Foundry (Cognitive Services / AI Services) resource.
-// Section 9.2 of mvp-architecture/Claude-Governance-MVP-Architecture.docx
-// No API keys/connection strings are used anywhere in this stack.
+// No API keys or connection strings are used anywhere in this stack.
 //
-// *** DEPRECATED / UNUSED FOR THIS PILOT ***
-// This module is NOT referenced by main.bicep. It assumed the Foundry
-// resource is reachable from the same Microsoft Entra tenant as the APIM
-// deployment, so a cross-RG role assignment (or even cross-tenant, if B2B
-// federation existed) could grant managed-identity access directly.
-//
-// In this deployment, the actual Foundry/Anthropic resource lives in a
-// completely SEPARATE Entra tenant with no federation trust configured, and
-// only an API key is available — there is no principal in this tenant that
-// can be granted a role on a resource in the other tenant. See
-// modules/keyvault.bicep + modules/apim-policy.bicep for the API-key-via-
-// Key-Vault approach actually wired up in main.bicep.
-//
-// Kept here for reference / for a future SAME-TENANT Foundry integration,
-// where this managed-identity approach is preferable to API keys.
+// Deployed by main.bicep with an explicit `scope:` pointing at the resource
+// group that holds the Foundry account (rg-sombaner-foundry), which differs
+// from the gateway's own resource group (rg-ai-gateway-layer). Same
+// subscription and tenant, so an ordinary role assignment is sufficient and
+// managed identity fully replaces the API-key path.
 
 @description('Principal ID of the APIM system-assigned managed identity.')
 param apimPrincipalId string

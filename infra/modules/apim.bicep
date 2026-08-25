@@ -31,12 +31,18 @@ param gatewayApiClientId string
 @description('Application (client) ID of the Claude-Cowork-Client app registration.')
 param coworkClientId string
 
+@description('A second client application ID the gateway accepts. Set to the Azure CLI app ID only while running validation; leave equal to coworkClientId otherwise.')
+param additionalClientAppId string
+
 @description('Resource ID of the Application Insights component to log to.')
 param appInsightsId string
 
 @description('Application Insights instrumentation key, used to register the APIM logger.')
 @secure()
 param appInsightsInstrumentationKey string
+
+@description('Resource ID of the Log Analytics workspace that receives APIM resource logs (GatewayLogs carries LastErrorReason for failed token validation).')
+param logAnalyticsWorkspaceId string
 
 @description('Tags applied to APIM and its child resources.')
 param tags object = {}
@@ -94,6 +100,18 @@ resource nvCoworkClientId 'Microsoft.ApiManagement/service/namedValues@2024-05-0
   }
 }
 
+// A second accepted client app ID. Defaults to the Claude client (a harmless
+// duplicate) so the policy always has a valid value; widen only for validation.
+resource nvAdditionalClientAppId 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = {
+  parent: apim
+  name: 'additional-client-app-id'
+  properties: {
+    displayName: 'additional-client-app-id'
+    value: additionalClientAppId
+    secret: false
+  }
+}
+
 // Application Insights logger + diagnostics: body logging is intentionally OFF.
 resource apimLogger 'Microsoft.ApiManagement/service/loggers@2024-05-01' = {
   parent: apim
@@ -113,6 +131,8 @@ resource apimDiagnostics 'Microsoft.ApiManagement/service/diagnostics@2024-05-01
   properties: {
     alwaysLog: 'allErrors'
     loggerId: apimLogger.id
+    // Required for llm-emit-token-metric to publish custom metrics with dimensions.
+    metrics: true
     sampling: {
       samplingType: 'fixed'
       percentage: 100
@@ -163,6 +183,29 @@ resource apimDiagnostics 'Microsoft.ApiManagement/service/diagnostics@2024-05-01
         }
       }
     }
+  }
+}
+
+// GatewayLogs is where validate-azure-ad-token failures surface LastErrorReason;
+// without this, 401 debugging is blind. Resource-specific tables per the guide.
+resource apimResourceLogs 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'send-to-law'
+  scope: apim
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logAnalyticsDestinationType: 'Dedicated'
+    logs: [
+      {
+        categoryGroup: 'allLogs'
+        enabled: true
+      }
+    ]
+    metrics: [
+      {
+        category: 'AllMetrics'
+        enabled: true
+      }
+    ]
   }
 }
 

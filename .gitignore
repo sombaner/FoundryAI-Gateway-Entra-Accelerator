@@ -6,3 +6,16 @@
 # values via readEnvironmentVariable()). Keep *.bicepparam out of source control;
 # only the .bicep templates themselves are tracked.
 *.bicepparam
+
+# OS and editor junk.
+.DS_Store
+
+# Python bytecode cache — can embed literal strings from source at build time.
+__pycache__/
+*.pyc
+
+# Local credential/token caches, in case a non-macOS fallback ever writes one
+# next to the scripts (the current get-gateway-token.py uses macOS Keychain
+# only, but this is a defensive backstop).
+*.token
+*.msal_cache*

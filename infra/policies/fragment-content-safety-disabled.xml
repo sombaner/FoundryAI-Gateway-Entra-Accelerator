@@ -1,0 +1,19 @@
+<!--
+  Content safety check — DISABLED variant (no-op).
+
+  Deployed as the APIM policy fragment "content-safety-check" when
+  enableContentSafety is false. The Content Safety resource, its RBAC grant, and
+  the APIM backend all still exist, so enabling moderation is a parameter flip
+  plus redeploy, not a rebuild.
+
+  Why this is currently the default: APIM's llm-content-safety policy
+  authenticates to Content Safety through the backend's credentials, and
+  backend-level managed identity did not yield a valid token in this
+  environment (Content Safety returned 401 "invalid subscription key or wrong
+  API endpoint"). The only configurations known to work use a Content Safety
+  API key, which this deployment deliberately refuses. Enabling the fragment
+  before that is resolved fails closed and blocks every prompt.
+-->
+<fragment>
+  <set-variable name="contentSafetyEnabled" value="false" />
+</fragment>

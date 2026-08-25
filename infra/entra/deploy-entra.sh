@@ -77,12 +77,14 @@ if [[ -z "$GATEWAY_APP_ID" ]]; then
   }"
 
   # App role: AI.Gateway.User
+  # allowedMemberTypes "User" covers both users and groups; adding "Group"
+  # explicitly is rejected by Entra with an invalid DirectAccessGrantTypes error.
   az ad app update --id "$GATEWAY_APP_ID" --app-roles "[{
     \"id\": \"$GATEWAY_USER_APPROLE_ID\",
     \"displayName\": \"AI Gateway User\",
     \"description\": \"Members of the assigned security group are entitled to use the Claude Desktop pilot inference gateway.\",
     \"value\": \"AI.Gateway.User\",
-    \"allowedMemberTypes\": [\"User\", \"Group\"],
+    \"allowedMemberTypes\": [\"User\"],
     \"isEnabled\": true
   }]"
 else
@@ -95,6 +97,40 @@ EXISTING_IDENTIFIER_URIS=$(az ad app show --id "$GATEWAY_APP_ID" --query "identi
 if [[ -z "$EXISTING_IDENTIFIER_URIS" ]]; then
   echo "Setting missing identifierUris on $GATEWAY_API_DISPLAY_NAME"
   az ad app update --id "$GATEWAY_APP_ID" --identifier-uris "api://$GATEWAY_APP_ID"
+fi
+
+# Idempotent safety net: ensure the delegated scope exists even when the app
+# was created by an earlier run that failed partway through.
+EXISTING_SCOPE=$(az ad app show --id "$GATEWAY_APP_ID" --query "api.oauth2PermissionScopes[?value=='Inference.Invoke'] | [0].id" -o tsv)
+if [[ -z "$EXISTING_SCOPE" ]]; then
+  echo "Adding missing Inference.Invoke scope to $GATEWAY_API_DISPLAY_NAME"
+  az ad app update --id "$GATEWAY_APP_ID" --set api="{
+    \"requestedAccessTokenVersion\": 2,
+    \"oauth2PermissionScopes\": [{
+      \"id\": \"$INFERENCE_INVOKE_SCOPE_ID\",
+      \"adminConsentDisplayName\": \"Invoke governed inference\",
+      \"adminConsentDescription\": \"Allows the calling application to invoke the governed Claude inference gateway on behalf of the signed-in user.\",
+      \"userConsentDisplayName\": \"Invoke governed inference\",
+      \"userConsentDescription\": \"Allows the app to send prompts to the governed Claude inference gateway on your behalf.\",
+      \"value\": \"Inference.Invoke\",
+      \"type\": \"User\",
+      \"isEnabled\": true
+    }]
+  }"
+fi
+
+# Idempotent safety net: ensure the app role exists.
+EXISTING_ROLE=$(az ad app show --id "$GATEWAY_APP_ID" --query "appRoles[?value=='AI.Gateway.User'] | [0].id" -o tsv)
+if [[ -z "$EXISTING_ROLE" ]]; then
+  echo "Adding missing AI.Gateway.User app role to $GATEWAY_API_DISPLAY_NAME"
+  az ad app update --id "$GATEWAY_APP_ID" --app-roles "[{
+    \"id\": \"$GATEWAY_USER_APPROLE_ID\",
+    \"displayName\": \"AI Gateway User\",
+    \"description\": \"Members of the assigned security group are entitled to use the Claude Desktop pilot inference gateway.\",
+    \"value\": \"AI.Gateway.User\",
+    \"allowedMemberTypes\": [\"User\"],
+    \"isEnabled\": true
+  }]"
 fi
 
 GATEWAY_SP_ID=$(az ad sp list --filter "appId eq '$GATEWAY_APP_ID'" --query "[0].id" -o tsv)

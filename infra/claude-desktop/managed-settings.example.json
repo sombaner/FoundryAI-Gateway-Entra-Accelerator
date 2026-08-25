@@ -1,15 +1,15 @@
 {
   "inference": {
     "provider": "gateway",
-    "baseUrl": "https://apim-claude-gov-pilot.azure-api.net",
+    "baseUrl": "https://<apim-service-name>.azure-api.net",
     "credential": {
       "kind": "interactive",
       "authFlow": "browser",
       "oidc": {
-        "clientId": "1c27492c-f972-433c-8327-26d95dd54a18",
-        "issuer": "https://login.microsoftonline.com/fc42bad7-5f0e-4bfe-af0a-122957fa475e/v2.0",
+        "clientId": "<cowork-client-app-id>",
+        "issuer": "https://login.microsoftonline.com/<tenant-id>/v2.0",
         "bearerTokenType": "access_token",
-        "scopes": "api://7ed913c5-2aa0-4aa0-be7e-43bdbc6c8e2c/Inference.Invoke",
+        "scopes": "api://<gateway-api-app-id>/Inference.Invoke",
         "appendOfflineAccess": true
       }
     }

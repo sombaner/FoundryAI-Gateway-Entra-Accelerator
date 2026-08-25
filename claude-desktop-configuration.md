@@ -1,8 +1,8 @@
-# Claude Desktop Configuration — Claude Governance MVP Pilot
+# Claude Desktop Configuration — Foundry AI Gateway
 
-Status: **The APIM authentication fix is deployed. Unauthenticated rejection
-is verified; an authenticated end-to-end request still requires a pilot user to
-complete the initial Entra sign-in.**
+Status: **Gateway deployed to `rg-ai-gateway-layer` with end-to-end managed
+identity to Foundry. Claude Desktop signs in interactively with Entra; no API
+key or client secret exists anywhere in the path.**
 
 ---
 
@@ -10,43 +10,74 @@ complete the initial Entra sign-in.**
 
 | Item | Value |
 |---|---|
-| Azure subscription | `0b17562a-418b-4922-acd0-9a155008a84d` |
-| Resource group | `rg-claude-governance` |
-| Region | `eastus2` |
-| APIM instance | `apim-claude-gov-pilot` (StandardV2) |
-| **Gateway URL** | `https://apim-claude-gov-pilot.azure-api.net` |
-| API path | `/v1` (Anthropic Messages passthrough) |
-| Approved models | `claude-opus-5`, `claude-opus-4-5`, `claude-opus-4-6`, `claude-sonnet-4-6` |
-| Entra tenant | `fc42bad7-5f0e-4bfe-af0a-122957fa475e` (`MngEnvMCAP978018.onmicrosoft.com`) |
-| Resource app (API) | `AI-Gateway-API` — `appId = 7ed913c5-2aa0-4aa0-be7e-43bdbc6c8e2c` |
-| Client app (Claude Desktop) | `Claude-Cowork-Client` — `appId = 1c27492c-f972-433c-8327-26d95dd54a18` |
-| Exposed scope | `api://7ed913c5-2aa0-4aa0-be7e-43bdbc6c8e2c/Inference.Invoke` |
-| App role required | `AI.Gateway.User` (assigned directly to pilot users — see §4) |
+| Azure subscription | `1c8300c9-08b4-4d88-b426-3868f3b963a1` (MCAPS-Hybrid-REQ-158996-2026-sombanerjee) |
+| Gateway resource group | `rg-ai-gateway-layer` |
+| Foundry resource group | `rg-sombaner-foundry` (`sombaner-azure-foundry`) |
+| Region | `eastus` |
+| APIM instance | `apim-claude-gov-pilot-34jv55` (StandardV2) |
+| **Gateway URL** | `https://apim-claude-gov-pilot-34jv55.azure-api.net` |
+| Claude API path | `/v1/messages` (Anthropic Messages passthrough) |
+| OpenAI API path | `/openai/v1/chat/completions` |
+| Discovery | `GET /v1/models` (Entra-gated, lists both surfaces) |
+| Approved models | `claude-opus-5`, `claude-sonnet-5`, `gpt-5.4` |
+| Entra tenant | `16b3c013-d300-468d-ac64-7eda0820b6d3` (`fdpo.onmicrosoft.com`) |
+| Resource app (API) | `AI-Gateway-API` — `appId = 930c5088-07bb-4299-ba5a-ef10074bc641` |
+| Client app (Claude Desktop) | `Claude-Cowork-Client` — `appId = bd44fc38-f1d8-4551-a39e-36110a20da77` |
+| Exposed scope | `api://930c5088-07bb-4299-ba5a-ef10074bc641/Inference.Invoke` |
+| Pilot group | `sg-claude-desktop-pilot` — `ad526581-a820-48f8-992c-0b9f56797ae1` |
 | Redirect URI (public client) | `http://127.0.0.1/callback` |
+| Backend auth | APIM system-assigned managed identity → Cognitive Services User on Foundry |
+| Content safety | Resource + RBAC + backend deployed; **enforcement off** (see §1.1) |
 
-Smoke tests confirmed:
-- `POST /v1/messages` with no/invalid token → `401` ✅
-- `GET /v1/models` with no/invalid token → `401` ✅ (returns the approved-model list once authenticated)
+GPT-5.4 uses a separate path because the Anthropic Messages and OpenAI Chat
+Completions wire formats are not interchangeable. Both surfaces sit behind the
+same hostname, the same Entra validation, the same content-safety fragment, and
+the same per-user token quota.
 
-The `401` is generated while the client is connecting **to APIM**. It is not an
-APIM-to-Foundry error: token validation runs before APIM selects or calls the
-Foundry backend.
+### 1.1 Content Safety status
+
+The Content Safety account, the `Cognitive Services User` grant to the APIM
+identity, and the `content-safety-backend` are all deployed. Enforcement is
+currently **off** via `enableContentSafety = false`.
+
+Reason: APIM's `llm-content-safety` policy authenticates to Content Safety
+through the backend's own credentials, and backend-level managed identity did
+not produce a usable token in this environment. Content Safety returned
+`401 "Access denied due to invalid subscription key or wrong API endpoint"`,
+and because the policy fails closed, every prompt was rejected with
+`403 Request failed content safety check` — including plain "Say hello."
+Tested and ruled out: audience with and without a trailing slash, backend URL
+with and without a trailing slash, backend URL with and without the
+`/contentsafety` segment, and RBAC propagation delay.
+
+The only configurations known to work today use a Content Safety **API key** on
+the backend, which this deployment deliberately refuses. Enabling it is a
+one-line flip once that is resolved:
+
+```bash
+ENABLE_CONTENT_SAFETY=true az deployment group create \
+  -g rg-ai-gateway-layer -f infra/main.bicep -p infra/main.bicepparam
+```
+
+That swaps the `content-safety-check` policy fragment from a no-op to the real
+`llm-content-safety` block; neither operation policy changes. Validate with a
+benign prompt **before** announcing it to pilot users, because the failure mode
+is a total outage rather than a degraded path.
 
 ---
 
 ## 2. Pilot users
 
-Directly assigned the `AI.Gateway.User` app role on `AI-Gateway-API` (tenant
-does not support group-assignable app roles on this app registration tier, so
-per-user assignment was used instead of the `sg-claude-desktop-pilot` group):
+Membership of `sg-claude-desktop-pilot` carries the `AI.Gateway.User` app role
+on `AI-Gateway-API`. Add a user with:
 
-- `admin@MngEnvMCAP978018.onmicrosoft.com`
-- `sombanerjee@MngEnvMCAP978018.onmicrosoft.com`
+```bash
+az ad group member add --group ad526581-a820-48f8-992c-0b9f56797ae1 --member-id <user-object-id>
+```
 
-Only these two identities can currently authenticate successfully against the
-gateway. To add more pilot users later, assign the same app role to their
-user object (see `infra/entra/deploy-entra.sh` or reuse the `az ad app
-role-assignment` pattern already used for these two).
+Tenant-wide admin consent for `Inference.Invoke` requires a Privileged Role
+Administrator. Until it is granted, each pilot user consents once at their
+first sign-in, which the scope permits (`type: User`).
 
 ---
 
@@ -88,15 +119,15 @@ The effective managed settings must contain:
 {
    "inference": {
       "provider": "gateway",
-      "baseUrl": "https://apim-claude-gov-pilot.azure-api.net",
+      "baseUrl": "https://apim-claude-gov-pilot-34jv55.azure-api.net",
       "credential": {
          "kind": "interactive",
          "authFlow": "browser",
          "oidc": {
-            "clientId": "1c27492c-f972-433c-8327-26d95dd54a18",
-            "issuer": "https://login.microsoftonline.com/fc42bad7-5f0e-4bfe-af0a-122957fa475e/v2.0",
+            "clientId": "bd44fc38-f1d8-4551-a39e-36110a20da77",
+            "issuer": "https://login.microsoftonline.com/16b3c013-d300-468d-ac64-7eda0820b6d3/v2.0",
             "bearerTokenType": "access_token",
-            "scopes": "api://7ed913c5-2aa0-4aa0-be7e-43bdbc6c8e2c/Inference.Invoke",
+            "scopes": "api://930c5088-07bb-4299-ba5a-ef10074bc641/Inference.Invoke",
             "appendOfflineAccess": true
          }
       }

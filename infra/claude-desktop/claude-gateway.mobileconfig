@@ -19,7 +19,7 @@
                   <key>provider</key>
                   <string>gateway</string>
                   <key>baseUrl</key>
-                  <string>https://apim-claude-gov-pilot.azure-api.net</string>
+                  <string>https://&lt;apim-service-name&gt;.azure-api.net</string>
                   <key>credential</key>
                   <dict>
                     <key>kind</key>
@@ -29,13 +29,13 @@
                     <key>oidc</key>
                     <dict>
                       <key>clientId</key>
-                      <string>1c27492c-f972-433c-8327-26d95dd54a18</string>
+                      <string>&lt;cowork-client-app-id&gt;</string>
                       <key>issuer</key>
-                      <string>https://login.microsoftonline.com/fc42bad7-5f0e-4bfe-af0a-122957fa475e/v2.0</string>
+                      <string>https://login.microsoftonline.com/&lt;tenant-id&gt;/v2.0</string>
                       <key>bearerTokenType</key>
                       <string>access_token</string>
                       <key>scopes</key>
-                      <string>api://7ed913c5-2aa0-4aa0-be7e-43bdbc6c8e2c/Inference.Invoke</string>
+                      <string>api://&lt;gateway-api-app-id&gt;/Inference.Invoke</string>
                       <key>appendOfflineAccess</key>
                       <true/>
                     </dict>

@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.33.93.31351",
-      "templateHash": "1993747540273377501"
+      "templateHash": "9743684167092743763"
     }
   },
   "parameters": {
@@ -70,7 +70,7 @@
     "entraTenantId": {
       "type": "string",
       "metadata": {
-        "description": "Microsoft Entra tenant ID (from entra-iac-agent output / Section 3 of the design doc)."
+        "description": "Microsoft Entra tenant ID."
       }
     },
     "gatewayApiClientId": {
@@ -85,23 +85,67 @@
         "description": "Application (client) ID of the Claude-Cowork-Client app registration."
       }
     },
-    "foundryEndpointUrl": {
+    "additionalClientAppId": {
       "type": "string",
+      "defaultValue": "",
       "metadata": {
-        "description": "Existing, pre-provisioned Anthropic Messages API base URL on Microsoft Foundry, up to and including the /v1 segment. This resource lives in a SEPARATE Entra tenant (no federation configured) and is never created/modified by this template — auth uses an API key from Key Vault, not managed identity. Example: https://ai-ssattiraju-foundry.services.ai.azure.com/anthropic/v1"
+        "description": "Optional second client application ID accepted by the gateway. Used to mint validation tokens with the Azure CLI app; leave empty in steady state."
       }
     },
-    "approvedModelName": {
+    "foundryAccountName": {
       "type": "string",
       "metadata": {
-        "description": "Comma-separated (no spaces) list of model deployment names Claude Desktop/Code may send in the request body to be allowed through the gateway allowlist."
+        "description": "Name of the existing Microsoft Foundry (AI Services) account. Pre-existing; never created or modified here."
       }
     },
-    "foundryApiKeySecretName": {
+    "foundryResourceGroupName": {
       "type": "string",
-      "defaultValue": "foundry-api-key",
       "metadata": {
-        "description": "Name of the Key Vault secret that holds the Foundry API key. Set the value out-of-band with `az keyvault secret set` after this deployment completes — never via Bicep parameters."
+        "description": "Name of the resource group containing the Foundry account."
+      }
+    },
+    "foundryAnthropicEndpoint": {
+      "type": "string",
+      "metadata": {
+        "description": "Foundry Anthropic Messages base URL, up to and including /v1. APIM appends the operation path (/messages)."
+      }
+    },
+    "foundryOpenAiEndpoint": {
+      "type": "string",
+      "metadata": {
+        "description": "Foundry OpenAI base URL, up to and including /openai. APIM appends the operation path (/v1/chat/completions)."
+      }
+    },
+    "approvedClaudeModels": {
+      "type": "string",
+      "metadata": {
+        "description": "Comma-separated (no spaces) allowlist of Anthropic model deployment names accepted on /v1/messages."
+      }
+    },
+    "approvedOpenAiModels": {
+      "type": "string",
+      "metadata": {
+        "description": "Comma-separated (no spaces) allowlist of OpenAI model deployment names accepted on /openai/v1/chat/completions."
+      }
+    },
+    "apimServiceNameOverride": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "APIM service name. Must be globally unique (it becomes <name>.azure-api.net). Defaults to a name derived from baseName plus a resource-group-stable suffix."
+      }
+    },
+    "enableContentSafety": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Whether the gateway enforces Azure AI Content Safety on prompts. See infra/policies/fragment-content-safety-disabled.xml for why this defaults to false."
+      }
+    },
+    "alertEmailAddress": {
+      "type": "string",
+      "metadata": {
+        "description": "Email address that receives Azure Monitor alerts for the gateway."
       }
     },
     "logRetentionInDays": {
@@ -138,8 +182,8 @@
     },
     "logAnalyticsWorkspaceName": "[format('log-{0}-{1}', parameters('baseName'), parameters('environmentName'))]",
     "appInsightsName": "[format('appi-{0}-{1}', parameters('baseName'), parameters('environmentName'))]",
-    "apimServiceName": "[format('apim-{0}-{1}', parameters('baseName'), parameters('environmentName'))]",
-    "keyVaultName": "[format('kv-{0}-{1}', parameters('environmentName'), take(uniqueString(resourceGroup().id), 10))]"
+    "apimServiceName": "[if(empty(parameters('apimServiceNameOverride')), format('apim-{0}-{1}-{2}', parameters('baseName'), parameters('environmentName'), take(uniqueString(resourceGroup().id), 6)), parameters('apimServiceNameOverride'))]",
+    "contentSafetyName": "[format('cs-{0}-{1}', parameters('baseName'), take(uniqueString(resourceGroup().id), 8))]"
   },
   "resources": [
     {
@@ -319,11 +363,15 @@
           "coworkClientId": {
             "value": "[parameters('coworkClientId')]"
           },
+          "additionalClientAppId": "[if(empty(parameters('additionalClientAppId')), createObject('value', parameters('coworkClientId')), createObject('value', parameters('additionalClientAppId')))]",
           "appInsightsId": {
             "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-observability'), '2022-09-01').outputs.appInsightsId.value]"
           },
           "appInsightsInstrumentationKey": {
             "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-observability'), '2022-09-01').outputs.appInsightsInstrumentationKey.value]"
+          },
+          "logAnalyticsWorkspaceId": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-observability'), '2022-09-01').outputs.logAnalyticsWorkspaceId.value]"
           },
           "tags": {
             "value": "[variables('tags')]"
@@ -336,7 +384,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.33.93.31351",
-              "templateHash": "17516753659070865917"
+              "templateHash": "742272136591625557"
             }
           },
           "parameters": {
@@ -396,6 +444,12 @@
                 "description": "Application (client) ID of the Claude-Cowork-Client app registration."
               }
             },
+            "additionalClientAppId": {
+              "type": "string",
+              "metadata": {
+                "description": "A second client application ID the gateway accepts. Set to the Azure CLI app ID only while running validation; leave equal to coworkClientId otherwise."
+              }
+            },
             "appInsightsId": {
               "type": "string",
               "metadata": {
@@ -406,6 +460,12 @@
               "type": "securestring",
               "metadata": {
                 "description": "Application Insights instrumentation key, used to register the APIM logger."
+              }
+            },
+            "logAnalyticsWorkspaceId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Log Analytics workspace that receives APIM resource logs (GatewayLogs carries LastErrorReason for failed token validation)."
               }
             },
             "tags": {
@@ -475,6 +535,19 @@
               ]
             },
             {
+              "type": "Microsoft.ApiManagement/service/namedValues",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}', parameters('apimServiceName'), 'additional-client-app-id')]",
+              "properties": {
+                "displayName": "additional-client-app-id",
+                "value": "[parameters('additionalClientAppId')]",
+                "secret": false
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service', parameters('apimServiceName'))]"
+              ]
+            },
+            {
               "type": "Microsoft.ApiManagement/service/loggers",
               "apiVersion": "2024-05-01",
               "name": "[format('{0}/{1}', parameters('apimServiceName'), 'appinsights-logger')]",
@@ -496,6 +569,7 @@
               "properties": {
                 "alwaysLog": "allErrors",
                 "loggerId": "[resourceId('Microsoft.ApiManagement/service/loggers', parameters('apimServiceName'), 'appinsights-logger')]",
+                "metrics": true,
                 "sampling": {
                   "samplingType": "fixed",
                   "percentage": 100
@@ -548,6 +622,31 @@
                 "[resourceId('Microsoft.ApiManagement/service', parameters('apimServiceName'))]",
                 "[resourceId('Microsoft.ApiManagement/service/loggers', parameters('apimServiceName'), 'appinsights-logger')]"
               ]
+            },
+            {
+              "type": "Microsoft.Insights/diagnosticSettings",
+              "apiVersion": "2021-05-01-preview",
+              "scope": "[format('Microsoft.ApiManagement/service/{0}', parameters('apimServiceName'))]",
+              "name": "send-to-law",
+              "properties": {
+                "workspaceId": "[parameters('logAnalyticsWorkspaceId')]",
+                "logAnalyticsDestinationType": "Dedicated",
+                "logs": [
+                  {
+                    "categoryGroup": "allLogs",
+                    "enabled": true
+                  }
+                ],
+                "metrics": [
+                  {
+                    "category": "AllMetrics",
+                    "enabled": true
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service', parameters('apimServiceName'))]"
+              ]
             }
           ],
           "outputs": {
@@ -589,7 +688,7 @@
     {
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2022-09-01",
-      "name": "deploy-keyvault",
+      "name": "deploy-content-safety",
       "properties": {
         "expressionEvaluationOptions": {
           "scope": "inner"
@@ -599,14 +698,11 @@
           "location": {
             "value": "[parameters('location')]"
           },
-          "keyVaultName": {
-            "value": "[variables('keyVaultName')]"
+          "contentSafetyName": {
+            "value": "[variables('contentSafetyName')]"
           },
           "apimPrincipalId": {
             "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-apim'), '2022-09-01').outputs.apimPrincipalId.value]"
-          },
-          "foundryApiKeySecretName": {
-            "value": "[parameters('foundryApiKeySecretName')]"
           },
           "tags": {
             "value": "[variables('tags')]"
@@ -619,116 +715,182 @@
             "_generator": {
               "name": "bicep",
               "version": "0.33.93.31351",
-              "templateHash": "14246156185245987064"
+              "templateHash": "3430181555157019071"
             }
           },
           "parameters": {
             "location": {
               "type": "string",
               "metadata": {
-                "description": "Azure region for the Key Vault."
+                "description": "Azure region for the Content Safety resource."
               }
             },
-            "keyVaultName": {
+            "contentSafetyName": {
               "type": "string",
               "metadata": {
-                "description": "Name of the Key Vault. Must be globally unique, 3-24 chars, alphanumeric + hyphen."
-              }
-            },
-            "apimPrincipalId": {
-              "type": "string",
-              "metadata": {
-                "description": "Principal ID of the APIM system-assigned managed identity, granted read-only access to secrets."
-              }
-            },
-            "foundryApiKeySecretName": {
-              "type": "string",
-              "defaultValue": "foundry-api-key",
-              "metadata": {
-                "description": "Name of the secret that will hold the Foundry (Anthropic) API key. Set the value out-of-band with `az keyvault secret set` — never via Bicep parameters."
-              }
-            },
-            "enablePurgeProtection": {
-              "type": "bool",
-              "defaultValue": false,
-              "metadata": {
-                "description": "Enable purge protection. Recommended for production; defaults to false for easy MVP/pilot teardown. Some tenant policies enforce this regardless of this setting."
+                "description": "Name of the Content Safety account (must be globally unique for its custom subdomain)."
               }
             },
             "tags": {
               "type": "object",
               "defaultValue": {},
               "metadata": {
-                "description": "Tags applied to the Key Vault."
+                "description": "Tags applied to the resource."
+              }
+            },
+            "apimPrincipalId": {
+              "type": "string",
+              "metadata": {
+                "description": "Principal ID of the APIM system-assigned managed identity, granted Cognitive Services User on this resource."
               }
             }
           },
           "variables": {
-            "keyVaultSecretsUserRoleId": "4633458b-17de-408a-b874-0445c86b69e6"
+            "cognitiveServicesUserRoleId": "a97b65f3-24c7-4388-baec-2e87135dc908"
           },
           "resources": [
             {
-              "type": "Microsoft.KeyVault/vaults",
-              "apiVersion": "2023-07-01",
-              "name": "[parameters('keyVaultName')]",
+              "type": "Microsoft.CognitiveServices/accounts",
+              "apiVersion": "2024-10-01",
+              "name": "[parameters('contentSafetyName')]",
               "location": "[parameters('location')]",
               "tags": "[parameters('tags')]",
+              "kind": "ContentSafety",
+              "sku": {
+                "name": "S0"
+              },
               "properties": {
-                "sku": {
-                  "family": "A",
-                  "name": "standard"
-                },
-                "tenantId": "[subscription().tenantId]",
-                "enableRbacAuthorization": true,
-                "enableSoftDelete": true,
-                "softDeleteRetentionInDays": 90,
-                "enablePurgeProtection": "[if(parameters('enablePurgeProtection'), true(), null())]",
-                "publicNetworkAccess": "Disabled"
+                "customSubDomainName": "[parameters('contentSafetyName')]",
+                "publicNetworkAccess": "Enabled",
+                "disableLocalAuth": true
               }
             },
             {
               "type": "Microsoft.Authorization/roleAssignments",
               "apiVersion": "2022-04-01",
-              "scope": "[format('Microsoft.KeyVault/vaults/{0}', parameters('keyVaultName'))]",
-              "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), parameters('apimPrincipalId'), variables('keyVaultSecretsUserRoleId'))]",
+              "scope": "[format('Microsoft.CognitiveServices/accounts/{0}', parameters('contentSafetyName'))]",
+              "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('contentSafetyName')), parameters('apimPrincipalId'), variables('cognitiveServicesUserRoleId'))]",
               "properties": {
                 "principalId": "[parameters('apimPrincipalId')]",
                 "principalType": "ServicePrincipal",
-                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('keyVaultSecretsUserRoleId'))]"
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('cognitiveServicesUserRoleId'))]"
               },
               "dependsOn": [
-                "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+                "[resourceId('Microsoft.CognitiveServices/accounts', parameters('contentSafetyName'))]"
               ]
             }
           ],
           "outputs": {
-            "keyVaultId": {
+            "contentSafetyName": {
               "type": "string",
               "metadata": {
-                "description": "Resource ID of the Key Vault."
+                "description": "Name of the Content Safety account."
               },
-              "value": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+              "value": "[parameters('contentSafetyName')]"
             },
-            "keyVaultName": {
+            "contentSafetyId": {
               "type": "string",
               "metadata": {
-                "description": "Name of the Key Vault."
+                "description": "Resource ID of the Content Safety account."
               },
-              "value": "[parameters('keyVaultName')]"
+              "value": "[resourceId('Microsoft.CognitiveServices/accounts', parameters('contentSafetyName'))]"
             },
-            "keyVaultUri": {
+            "contentSafetyEndpoint": {
               "type": "string",
               "metadata": {
-                "description": "URI of the Key Vault (with trailing slash), used to build the APIM named value secret identifier."
+                "description": "Data-plane endpoint used as the APIM backend URL."
               },
-              "value": "[reference(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), '2023-07-01').vaultUri]"
+              "value": "[reference(resourceId('Microsoft.CognitiveServices/accounts', parameters('contentSafetyName')), '2024-10-01').endpoint]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'deploy-apim')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "deploy-foundry-rbac",
+      "resourceGroup": "[parameters('foundryResourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "apimPrincipalId": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-apim'), '2022-09-01').outputs.apimPrincipalId.value]"
+          },
+          "foundryResourceName": {
+            "value": "[parameters('foundryAccountName')]"
+          },
+          "roleChoice": {
+            "value": "cognitiveServicesUser"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.33.93.31351",
+              "templateHash": "17399527523943397179"
+            }
+          },
+          "parameters": {
+            "apimPrincipalId": {
+              "type": "string",
+              "metadata": {
+                "description": "Principal ID of the APIM system-assigned managed identity."
+              }
             },
-            "foundryApiKeySecretName": {
+            "foundryResourceName": {
               "type": "string",
               "metadata": {
-                "description": "Name of the secret APIM expects to hold the Foundry API key."
+                "description": "Name (not full resource ID) of the existing Foundry (Cognitive Services / AI Services) account. This resource is pre-existing and is not created/modified here."
+              }
+            },
+            "roleChoice": {
+              "type": "string",
+              "defaultValue": "cognitiveServicesUser",
+              "allowedValues": [
+                "cognitiveServicesUser",
+                "azureAiUser"
+              ],
+              "metadata": {
+                "description": "Built-in role to grant. Defaults to \"Cognitive Services User\"; set to azureAiUser to use \"Azure AI User\" instead — either is acceptable per the design doc."
+              }
+            }
+          },
+          "variables": {
+            "roleDefinitionIds": {
+              "cognitiveServicesUser": "a97b65f3-24c7-4388-baec-2e87135dc908",
+              "azureAiUser": "53ca6127-db72-4b80-b1b0-d745d6d5456d"
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[format('Microsoft.CognitiveServices/accounts/{0}', parameters('foundryResourceName'))]",
+              "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('foundryResourceName')), parameters('apimPrincipalId'), variables('roleDefinitionIds')[parameters('roleChoice')])]",
+              "properties": {
+                "principalId": "[parameters('apimPrincipalId')]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitionIds')[parameters('roleChoice')])]"
+              }
+            }
+          ],
+          "outputs": {
+            "roleAssignmentId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the role assignment created."
               },
-              "value": "[parameters('foundryApiKeySecretName')]"
+              "value": "[extensionResourceId(resourceId('Microsoft.CognitiveServices/accounts', parameters('foundryResourceName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('foundryResourceName')), parameters('apimPrincipalId'), variables('roleDefinitionIds')[parameters('roleChoice')]))]"
             }
           }
         }
@@ -750,17 +912,23 @@
           "apimServiceName": {
             "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-apim'), '2022-09-01').outputs.apimServiceName.value]"
           },
-          "foundryEndpointUrl": {
-            "value": "[parameters('foundryEndpointUrl')]"
+          "foundryAnthropicEndpoint": {
+            "value": "[parameters('foundryAnthropicEndpoint')]"
           },
-          "keyVaultUri": {
-            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-keyvault'), '2022-09-01').outputs.keyVaultUri.value]"
+          "foundryOpenAiEndpoint": {
+            "value": "[parameters('foundryOpenAiEndpoint')]"
           },
-          "foundryApiKeySecretName": {
-            "value": "[parameters('foundryApiKeySecretName')]"
+          "contentSafetyEndpoint": {
+            "value": "[replace(reference(resourceId('Microsoft.Resources/deployments', 'deploy-content-safety'), '2022-09-01').outputs.contentSafetyEndpoint.value, '.com/', '.com')]"
           },
-          "approvedModelName": {
-            "value": "[parameters('approvedModelName')]"
+          "enableContentSafety": {
+            "value": "[parameters('enableContentSafety')]"
+          },
+          "approvedClaudeModels": {
+            "value": "[parameters('approvedClaudeModels')]"
+          },
+          "approvedOpenAiModels": {
+            "value": "[parameters('approvedOpenAiModels')]"
           },
           "backendForwardTimeoutSeconds": {
             "value": "[parameters('backendForwardTimeoutSeconds')]"
@@ -776,7 +944,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.33.93.31351",
-              "templateHash": "7282378437269051004"
+              "templateHash": "15867888617051659850"
             }
           },
           "parameters": {
@@ -786,29 +954,34 @@
                 "description": "Name of the existing APIM service to attach these resources to."
               }
             },
-            "foundryEndpointUrl": {
+            "foundryAnthropicEndpoint": {
               "type": "string",
               "metadata": {
-                "description": "Existing Foundry Anthropic Messages API base URL, up to and including the /v1 segment, e.g. https://<foundry-resource>.services.ai.azure.com/anthropic/v1 (APIM appends the operation path, /messages, to this base). Foundry is pre-existing and is never created/modified by this template."
+                "description": "Foundry Anthropic Messages base URL, up to and including /v1. APIM appends the operation path (/messages)."
               }
             },
-            "keyVaultUri": {
+            "foundryOpenAiEndpoint": {
               "type": "string",
               "metadata": {
-                "description": "Key Vault URI (with trailing slash) holding the Foundry API key secret. Supplied by the keyvault.bicep module output."
+                "description": "Foundry OpenAI base URL, up to and including /openai. APIM appends the operation path (/v1/chat/completions)."
               }
             },
-            "foundryApiKeySecretName": {
+            "contentSafetyEndpoint": {
               "type": "string",
-              "defaultValue": "foundry-api-key",
               "metadata": {
-                "description": "Name of the Key Vault secret holding the Foundry API key."
+                "description": "Azure AI Content Safety data-plane endpoint used by the llm-content-safety policy."
               }
             },
-            "approvedModelName": {
+            "approvedClaudeModels": {
               "type": "string",
               "metadata": {
-                "description": "Comma-separated (no spaces) list of model deployment names that Claude Desktop/Code may send in the \"model\" field to be allowed through the gateway allowlist."
+                "description": "Comma-separated (no spaces) allowlist of Anthropic model deployment names accepted on /v1/messages."
+              }
+            },
+            "approvedOpenAiModels": {
+              "type": "string",
+              "metadata": {
+                "description": "Comma-separated (no spaces) allowlist of OpenAI model deployment names accepted on /openai/v1/chat/completions."
               }
             },
             "backendForwardTimeoutSeconds": {
@@ -817,7 +990,7 @@
               "minValue": 60,
               "maxValue": 600,
               "metadata": {
-                "description": "APIM forward timeout, in seconds, for long-running inference/streaming calls (5-10 minutes per Section 5.4)."
+                "description": "APIM forward timeout, in seconds, for long-running/streaming inference calls."
               }
             },
             "includeModelsOperation": {
@@ -826,32 +999,40 @@
               "metadata": {
                 "description": "Whether to also expose GET /v1/models for client discovery."
               }
+            },
+            "enableContentSafety": {
+              "type": "bool",
+              "defaultValue": false,
+              "metadata": {
+                "description": "Whether the content-safety-check fragment enforces llm-content-safety. Leave false until backend managed-identity auth to Content Safety is proven, since the policy fails closed."
+              }
             }
           },
           "variables": {
-            "$fxv#0": "<!--\n  Claude Governance MVP — /v1/messages operation policy\n  Source of truth: mvp-architecture/Claude-Governance-MVP-Architecture.docx, Section 5.3\n  Order matters. Do not remove or reorder steps without updating the design doc.\n  {{entra-tenant-id}}, {{gateway-api-client-id}}, {{cowork-client-id}},\n  {{approved-model-name}}, {{foundry-api-key}} are APIM named values, resolved\n  by APIM at request time — do not replace with literals.\n\n  BACKEND AUTH: the Foundry/Anthropic resource lives in a separate Entra\n  tenant with no federation configured, so managed-identity auth to the\n  backend is not possible. {{foundry-api-key}} is a Key-Vault-backed secret\n  named value (modules/keyvault.bicep + modules/apim-policy.bicep) — the raw\n  key is never sent by the client and never stored in this file.\n-->\n<policies>\n  <inbound>\n    <base />\n\n    <!-- 5.3.1 Entra access-token validation -->\n    <validate-azure-ad-token tenant-id=\"{{entra-tenant-id}}\"\n        header-name=\"Authorization\" failed-validation-httpcode=\"401\"\n        failed-validation-error-message=\"Missing or invalid access token.\"\n        output-token-variable-name=\"gatewayJwt\">\n      <audiences>\n        <audience>{{gateway-api-client-id}}</audience>\n      </audiences>\n      <client-application-ids>\n        <application-id>{{cowork-client-id}}</application-id>\n      </client-application-ids>\n      <required-claims>\n        <claim name=\"scp\" match=\"any\" separator=\" \">\n          <value>Inference.Invoke</value>\n        </claim>\n      </required-claims>\n    </validate-azure-ad-token>\n    <set-variable name=\"userOid\" value=\"@{\n      var jwt = (Jwt)context.Variables[&quot;gatewayJwt&quot;];\n      return jwt.Claims.GetValueOrDefault(&quot;oid&quot;, &quot;&quot;);\n    }\" />\n\n        <!-- 5.3.2 Model allowlist ({{approved-model-name}} is a comma-separated\n          list of approved model deployment names, no spaces) -->\n    <set-variable name=\"requestedModel\" value=\"@{\n      var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);\n      return (string)body[&quot;model&quot;] ?? &quot;&quot;;\n    }\" />\n    <choose>\n      <when condition=\"@{\n          var approved = &quot;{{approved-model-name}}&quot;.Split(',');\n          var requested = (string)context.Variables[&quot;requestedModel&quot;];\n          return !approved.Contains(requested);\n      }\">\n        <return-response>\n          <set-status code=\"403\" reason=\"Model Not Entitled\" />\n          <set-body>{\"type\":\"error\",\"error\":{\"type\":\"permission_error\",\n            \"message\":\"The requested model is not approved for this gateway.\"}}</set-body>\n        </return-response>\n      </when>\n    </choose>\n\n    <!-- 5.3.3 Per-user token rate + monthly quota -->\n    <llm-token-limit counter-key=\"@(&quot;user:&quot; + (string)context.Variables[&quot;userOid&quot;])\"\n        tokens-per-minute=\"30000\" token-quota=\"5000000\" token-quota-period=\"Monthly\"\n        estimate-prompt-tokens=\"true\" retry-after-header-name=\"Retry-After\"\n        remaining-tokens-header-name=\"x-user-tpm-remaining\"\n        remaining-quota-tokens-header-name=\"x-user-quota-remaining\"\n        tokens-consumed-header-name=\"x-tokens-consumed\" />\n\n    <!-- 5.3.4 Low-cardinality token metric + metadata-only trace -->\n    <llm-emit-token-metric namespace=\"EnterpriseAI\">\n      <dimension name=\"API ID\" />\n      <dimension name=\"Backend ID\" />\n    </llm-emit-token-metric>\n    <trace source=\"ai-gateway-mvp\" severity=\"information\">\n      <message>@(\"ai_gateway_request\")</message>\n      <metadata name=\"correlationId\" value=\"@(context.RequestId.ToString())\" />\n      <metadata name=\"userOid\" value=\"@((string)context.Variables[&quot;userOid&quot;])\" />\n      <metadata name=\"model\" value=\"@((string)context.Variables[&quot;requestedModel&quot;])\" />\n    </trace>\n\n    <!-- 5.3.5 API-key backend call to Foundry (cross-tenant resource; managed\n         identity is not possible, so the key is injected from a Key Vault-\n         backed named value instead of being forwarded from the client) -->\n    <set-backend-service backend-id=\"foundry-claude-pilot\" />\n    <set-header name=\"Ocp-Apim-Subscription-Key\" exists-action=\"delete\" />\n    <set-header name=\"x-api-key\" exists-action=\"override\">\n      <value>{{foundry-api-key}}</value>\n    </set-header>\n\n    <!-- 5.4 Streaming: forward Anthropic headers unchanged -->\n    <set-header name=\"anthropic-version\" exists-action=\"skip\">\n      <value>@(context.Request.Headers.GetValueOrDefault(\"anthropic-version\",\"\"))</value>\n    </set-header>\n    <set-header name=\"anthropic-beta\" exists-action=\"skip\">\n      <value>@(context.Request.Headers.GetValueOrDefault(\"anthropic-beta\",\"\"))</value>\n    </set-header>\n  </inbound>\n  <backend>\n    <!-- 5.4 Streaming: no SSE buffering, generous forward timeout for long-running calls -->\n    <forward-request timeout=\"{{backend-forward-timeout}}\" buffer-response=\"false\" />\n  </backend>\n  <outbound>\n    <base />\n  </outbound>\n  <on-error>\n    <base />\n  </on-error>\n</policies>\n",
-            "$fxv#1": "<!--\n  Claude Governance MVP — GET /v1/models operation policy\n  Optional client-discovery endpoint. Does not call the Foundry backend\n  (Anthropic has no public /v1/models list API) — it simply returns a\n  static JSON document describing the models approved for this\n  gateway ({{approved-model-name}}), still gated by the same Entra token\n  validation used on /v1/messages so it is not an unauthenticated probe.\n-->\n<policies>\n  <inbound>\n    <base />\n    <validate-azure-ad-token tenant-id=\"{{entra-tenant-id}}\"\n        header-name=\"Authorization\" failed-validation-httpcode=\"401\"\n        failed-validation-error-message=\"Missing or invalid access token.\">\n      <audiences>\n        <audience>{{gateway-api-client-id}}</audience>\n      </audiences>\n      <client-application-ids>\n        <application-id>{{cowork-client-id}}</application-id>\n      </client-application-ids>\n      <required-claims>\n        <claim name=\"scp\" match=\"any\" separator=\" \">\n          <value>Inference.Invoke</value>\n        </claim>\n      </required-claims>\n    </validate-azure-ad-token>\n    <return-response>\n      <set-status code=\"200\" reason=\"OK\" />\n      <set-header name=\"Content-Type\" exists-action=\"override\">\n        <value>application/json</value>\n      </set-header>\n      <set-body>@{\n        var approved = &quot;{{approved-model-name}}&quot;.Split(',');\n        var models = new JArray();\n        foreach (var m in approved) {\n          models.Add(new JObject(\n            new JProperty(&quot;id&quot;, m),\n            new JProperty(&quot;object&quot;, &quot;model&quot;)\n          ));\n        }\n        return new JObject(\n          new JProperty(&quot;object&quot;, &quot;list&quot;),\n          new JProperty(&quot;data&quot;, models)\n        ).ToString();\n      }</set-body>\n    </return-response>\n  </inbound>\n  <backend>\n    <base />\n  </backend>\n  <outbound>\n    <base />\n  </outbound>\n  <on-error>\n    <base />\n  </on-error>\n</policies>\n"
+            "$fxv#0": "<!--\n  Content safety check — ENABLED variant.\n\n  Deployed as the APIM policy fragment \"content-safety-check\" and included by\n  both the Claude and OpenAI operation policies, so prompt moderation can be\n  toggled in one place without editing either operation policy.\n\n  Developer-coding thresholds: Violence/SelfHarm are relaxed because stack\n  traces, security tooling, and crash discussion trigger false positives for an\n  authenticated staff audience. Hate/Sexual stay at the stricter default.\n-->\n<fragment>\n  <llm-content-safety backend-id=\"content-safety-backend\" shield-prompt=\"true\">\n    <categories output-type=\"EightSeverityLevels\">\n      <category name=\"Hate\" threshold=\"4\" />\n      <category name=\"SelfHarm\" threshold=\"6\" />\n      <category name=\"Sexual\" threshold=\"4\" />\n      <category name=\"Violence\" threshold=\"6\" />\n    </categories>\n  </llm-content-safety>\n</fragment>\n",
+            "$fxv#1": "<!--\n  Content safety check — DISABLED variant (no-op).\n\n  Deployed as the APIM policy fragment \"content-safety-check\" when\n  enableContentSafety is false. The Content Safety resource, its RBAC grant, and\n  the APIM backend all still exist, so enabling moderation is a parameter flip\n  plus redeploy, not a rebuild.\n\n  Why this is currently the default: APIM's llm-content-safety policy\n  authenticates to Content Safety through the backend's credentials, and\n  backend-level managed identity did not yield a valid token in this\n  environment (Content Safety returned 401 \"invalid subscription key or wrong\n  API endpoint\"). The only configurations known to work use a Content Safety\n  API key, which this deployment deliberately refuses. Enabling the fragment\n  before that is resolved fails closed and blocks every prompt.\n-->\n<fragment>\n  <set-variable name=\"contentSafetyEnabled\" value=\"false\" />\n</fragment>\n",
+            "$fxv#2": "<!--\n  AI Gateway — POST /v1/messages operation policy\n\n  Order matters. Do not remove or reorder steps without updating the guide.\n  {{entra-tenant-id}}, {{gateway-api-client-id}}, {{cowork-client-id}},\n  {{approved-claude-models}}, {{backend-forward-timeout}} are APIM named\n  values resolved at request time — do not replace with literals.\n\n  BACKEND AUTH: APIM's system-assigned managed identity holds Cognitive\n  Services User on the same-tenant Foundry account. No API key exists in this\n  stack, in Key Vault, or on any client.\n-->\n<policies>\n  <inbound>\n    <base />\n\n    <!-- 1. Entra access-token validation. Both audience forms are accepted:\n         v2 tokens carry the bare app-id GUID, v1 tokens the api:// URI. -->\n    <validate-azure-ad-token tenant-id=\"{{entra-tenant-id}}\"\n        header-name=\"Authorization\" failed-validation-httpcode=\"401\"\n        failed-validation-error-message=\"Missing or invalid access token.\"\n        output-token-variable-name=\"gatewayJwt\">\n      <audiences>\n        <audience>{{gateway-api-client-id}}</audience>\n        <audience>api://{{gateway-api-client-id}}</audience>\n      </audiences>\n      <client-application-ids>\n        <application-id>{{cowork-client-id}}</application-id>\n        <application-id>{{additional-client-app-id}}</application-id>\n      </client-application-ids>\n      <required-claims>\n        <claim name=\"scp\" match=\"any\" separator=\" \">\n          <value>Inference.Invoke</value>\n        </claim>\n      </required-claims>\n    </validate-azure-ad-token>\n    <set-variable name=\"userOid\" value=\"@{\n      var jwt = (Jwt)context.Variables[&quot;gatewayJwt&quot;];\n      return jwt.Claims.GetValueOrDefault(&quot;oid&quot;, &quot;&quot;);\n    }\" />\n\n    <!-- 2. Model allowlist ({{approved-claude-models}} is comma-separated, no spaces) -->\n    <set-variable name=\"requestedModel\" value=\"@{\n      var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);\n      return (string)body[&quot;model&quot;] ?? &quot;&quot;;\n    }\" />\n    <choose>\n      <when condition=\"@{\n          var approved = &quot;{{approved-claude-models}}&quot;.Split(',');\n          var requested = (string)context.Variables[&quot;requestedModel&quot;];\n          return !approved.Contains(requested);\n      }\">\n        <return-response>\n          <set-status code=\"403\" reason=\"Model Not Entitled\" />\n          <set-header name=\"Content-Type\" exists-action=\"override\">\n            <value>application/json</value>\n          </set-header>\n          <set-body>{\"type\":\"error\",\"error\":{\"type\":\"permission_error\",\"message\":\"The requested model is not approved for this gateway.\"}}</set-body>\n        </return-response>\n      </when>\n    </choose>\n\n    <!-- 3. Organization-controlled prompt safety, toggled by the\n         content-safety-check policy fragment. -->\n    <include-fragment fragment-id=\"content-safety-check\" />\n\n    <!-- 4. Per-user token rate + monthly quota -->\n    <llm-token-limit counter-key=\"@(&quot;user:&quot; + (string)context.Variables[&quot;userOid&quot;])\"\n        tokens-per-minute=\"30000\" token-quota=\"5000000\" token-quota-period=\"Monthly\"\n        estimate-prompt-tokens=\"true\" retry-after-header-name=\"Retry-After\"\n        remaining-tokens-header-name=\"x-user-tpm-remaining\"\n        remaining-quota-tokens-header-name=\"x-user-quota-remaining\"\n        tokens-consumed-header-name=\"x-tokens-consumed\" />\n\n    <!-- 5. Low-cardinality token metric + metadata-only trace. Never log content. -->\n    <llm-emit-token-metric namespace=\"EnterpriseAI\">\n      <dimension name=\"API ID\" />\n      <dimension name=\"Backend ID\" />\n    </llm-emit-token-metric>\n    <trace source=\"ai-gateway\" severity=\"information\">\n      <message>@(\"ai_gateway_request\")</message>\n      <metadata name=\"correlationId\" value=\"@(context.RequestId.ToString())\" />\n      <metadata name=\"userOid\" value=\"@((string)context.Variables[&quot;userOid&quot;])\" />\n      <metadata name=\"model\" value=\"@((string)context.Variables[&quot;requestedModel&quot;])\" />\n    </trace>\n\n    <!-- 6. Managed-identity backend call. Client-supplied credentials are stripped\n         so nothing a caller sends can influence backend authentication. -->\n    <set-backend-service backend-id=\"foundry-claude\" />\n    <set-header name=\"Ocp-Apim-Subscription-Key\" exists-action=\"delete\" />\n    <set-header name=\"x-api-key\" exists-action=\"delete\" />\n    <set-header name=\"api-key\" exists-action=\"delete\" />\n    <authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" />\n\n    <!-- 7. Streaming: forward Anthropic protocol headers unchanged -->\n    <set-header name=\"anthropic-version\" exists-action=\"skip\">\n      <value>@(context.Request.Headers.GetValueOrDefault(\"anthropic-version\",\"\"))</value>\n    </set-header>\n    <set-header name=\"anthropic-beta\" exists-action=\"skip\">\n      <value>@(context.Request.Headers.GetValueOrDefault(\"anthropic-beta\",\"\"))</value>\n    </set-header>\n  </inbound>\n  <backend>\n    <!-- Streaming: no SSE buffering, generous forward timeout for long-running calls -->\n    <forward-request timeout=\"{{backend-forward-timeout}}\" buffer-response=\"false\" />\n  </backend>\n  <outbound>\n    <base />\n  </outbound>\n  <on-error>\n    <base />\n  </on-error>\n</policies>\n",
+            "$fxv#3": "<!--\n  AI Gateway — GET /v1/models operation policy\n  Client-discovery endpoint. Does not call a backend — it returns a static JSON\n  document describing the models this gateway admits, still gated by the same\n  Entra token validation used on /v1/messages so it is not an open probe.\n\n  Claude clients consume this list; the OpenAI models are advertised with their\n  own endpoint path so a caller can discover both surfaces from one place.\n-->\n<policies>\n  <inbound>\n    <base />\n    <validate-azure-ad-token tenant-id=\"{{entra-tenant-id}}\"\n        header-name=\"Authorization\" failed-validation-httpcode=\"401\"\n        failed-validation-error-message=\"Missing or invalid access token.\">\n      <audiences>\n        <audience>{{gateway-api-client-id}}</audience>\n        <audience>api://{{gateway-api-client-id}}</audience>\n      </audiences>\n      <client-application-ids>\n        <application-id>{{cowork-client-id}}</application-id>\n        <application-id>{{additional-client-app-id}}</application-id>\n      </client-application-ids>\n      <required-claims>\n        <claim name=\"scp\" match=\"any\" separator=\" \">\n          <value>Inference.Invoke</value>\n        </claim>\n      </required-claims>\n    </validate-azure-ad-token>\n    <return-response>\n      <set-status code=\"200\" reason=\"OK\" />\n      <set-header name=\"Content-Type\" exists-action=\"override\">\n        <value>application/json</value>\n      </set-header>\n      <set-body>@{\n        var models = new JArray();\n        foreach (var m in &quot;{{approved-claude-models}}&quot;.Split(',')) {\n          models.Add(new JObject(\n            new JProperty(&quot;id&quot;, m),\n            new JProperty(&quot;object&quot;, &quot;model&quot;),\n            new JProperty(&quot;endpoint&quot;, &quot;/v1/messages&quot;)\n          ));\n        }\n        foreach (var m in &quot;{{approved-openai-models}}&quot;.Split(',')) {\n          models.Add(new JObject(\n            new JProperty(&quot;id&quot;, m),\n            new JProperty(&quot;object&quot;, &quot;model&quot;),\n            new JProperty(&quot;endpoint&quot;, &quot;/openai/v1/chat/completions&quot;)\n          ));\n        }\n        return new JObject(\n          new JProperty(&quot;object&quot;, &quot;list&quot;),\n          new JProperty(&quot;data&quot;, models)\n        ).ToString();\n      }</set-body>\n    </return-response>\n  </inbound>\n  <backend>\n    <base />\n  </backend>\n  <outbound>\n    <base />\n  </outbound>\n  <on-error>\n    <base />\n  </on-error>\n</policies>\n",
+            "$fxv#4": "<!--\n  AI Gateway — POST /openai/v1/chat/completions operation policy\n\n  Same governance sequence as the Claude surface, applied to the OpenAI wire\n  format. Kept as a separate operation because Anthropic Messages and OpenAI\n  Chat Completions request/response schemas are not interchangeable.\n\n  {{entra-tenant-id}}, {{gateway-api-client-id}}, {{cowork-client-id}},\n  {{approved-openai-models}}, {{backend-forward-timeout}} are APIM named\n  values resolved at request time — do not replace with literals.\n\n  BACKEND AUTH: APIM's system-assigned managed identity. No API keys.\n-->\n<policies>\n  <inbound>\n    <base />\n\n    <!-- 1. Entra access-token validation. Both audience forms are accepted:\n         v2 tokens carry the bare app-id GUID, v1 tokens the api:// URI. -->\n    <validate-azure-ad-token tenant-id=\"{{entra-tenant-id}}\"\n        header-name=\"Authorization\" failed-validation-httpcode=\"401\"\n        failed-validation-error-message=\"Missing or invalid access token.\"\n        output-token-variable-name=\"gatewayJwt\">\n      <audiences>\n        <audience>{{gateway-api-client-id}}</audience>\n        <audience>api://{{gateway-api-client-id}}</audience>\n      </audiences>\n      <client-application-ids>\n        <application-id>{{cowork-client-id}}</application-id>\n        <application-id>{{additional-client-app-id}}</application-id>\n      </client-application-ids>\n      <required-claims>\n        <claim name=\"scp\" match=\"any\" separator=\" \">\n          <value>Inference.Invoke</value>\n        </claim>\n      </required-claims>\n    </validate-azure-ad-token>\n    <set-variable name=\"userOid\" value=\"@{\n      var jwt = (Jwt)context.Variables[&quot;gatewayJwt&quot;];\n      return jwt.Claims.GetValueOrDefault(&quot;oid&quot;, &quot;&quot;);\n    }\" />\n\n    <!-- 2. Model allowlist. Admission decision, kept ahead of every other control. -->\n    <set-variable name=\"requestedModel\" value=\"@{\n      var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);\n      return (string)body[&quot;model&quot;] ?? &quot;&quot;;\n    }\" />\n    <choose>\n      <when condition=\"@{\n          var approved = &quot;{{approved-openai-models}}&quot;.Split(',');\n          var requested = (string)context.Variables[&quot;requestedModel&quot;];\n          return !approved.Contains(requested);\n      }\">\n        <return-response>\n          <set-status code=\"403\" reason=\"Model Not Entitled\" />\n          <set-header name=\"Content-Type\" exists-action=\"override\">\n            <value>application/json</value>\n          </set-header>\n          <set-body>{\"error\":{\"code\":\"permission_error\",\"message\":\"The requested model is not approved for this gateway.\"}}</set-body>\n        </return-response>\n      </when>\n    </choose>\n\n    <!-- 3. Organization-controlled prompt safety, toggled by the\n         content-safety-check policy fragment. -->\n    <include-fragment fragment-id=\"content-safety-check\" />\n\n    <!-- 4. Per-user token rate + monthly quota, keyed on the validated oid claim. -->\n    <llm-token-limit counter-key=\"@(&quot;user:&quot; + (string)context.Variables[&quot;userOid&quot;])\"\n        tokens-per-minute=\"30000\" token-quota=\"5000000\" token-quota-period=\"Monthly\"\n        estimate-prompt-tokens=\"true\" retry-after-header-name=\"Retry-After\"\n        remaining-tokens-header-name=\"x-user-tpm-remaining\"\n        remaining-quota-tokens-header-name=\"x-user-quota-remaining\"\n        tokens-consumed-header-name=\"x-tokens-consumed\" />\n\n    <!-- 5. Low-cardinality token metric + metadata-only trace. Never log content. -->\n    <llm-emit-token-metric namespace=\"EnterpriseAI\">\n      <dimension name=\"API ID\" />\n      <dimension name=\"Backend ID\" />\n    </llm-emit-token-metric>\n    <trace source=\"ai-gateway\" severity=\"information\">\n      <message>@(\"ai_gateway_request\")</message>\n      <metadata name=\"correlationId\" value=\"@(context.RequestId.ToString())\" />\n      <metadata name=\"userOid\" value=\"@((string)context.Variables[&quot;userOid&quot;])\" />\n      <metadata name=\"model\" value=\"@((string)context.Variables[&quot;requestedModel&quot;])\" />\n    </trace>\n\n    <!-- 6. Managed-identity backend call. Client-supplied credentials are stripped\n         so nothing a caller sends can influence backend authentication. -->\n    <set-backend-service backend-id=\"foundry-openai\" />\n    <set-header name=\"Ocp-Apim-Subscription-Key\" exists-action=\"delete\" />\n    <set-header name=\"api-key\" exists-action=\"delete\" />\n    <set-header name=\"x-api-key\" exists-action=\"delete\" />\n    <authentication-managed-identity resource=\"https://cognitiveservices.azure.com\" />\n  </inbound>\n  <backend>\n    <forward-request timeout=\"{{backend-forward-timeout}}\" buffer-response=\"false\" />\n  </backend>\n  <outbound>\n    <base />\n  </outbound>\n  <on-error>\n    <base />\n  </on-error>\n</policies>\n"
           },
           "resources": [
             {
               "type": "Microsoft.ApiManagement/service/namedValues",
               "apiVersion": "2024-05-01",
-              "name": "[format('{0}/{1}', parameters('apimServiceName'), 'foundry-api-key')]",
+              "name": "[format('{0}/{1}', parameters('apimServiceName'), 'approved-claude-models')]",
               "properties": {
-                "displayName": "foundry-api-key",
-                "secret": true,
-                "keyVault": {
-                  "secretIdentifier": "[format('{0}secrets/{1}', parameters('keyVaultUri'), parameters('foundryApiKeySecretName'))]"
-                }
+                "displayName": "approved-claude-models",
+                "value": "[parameters('approvedClaudeModels')]",
+                "secret": false
               }
             },
             {
               "type": "Microsoft.ApiManagement/service/namedValues",
               "apiVersion": "2024-05-01",
-              "name": "[format('{0}/{1}', parameters('apimServiceName'), 'approved-model-name')]",
+              "name": "[format('{0}/{1}', parameters('apimServiceName'), 'approved-openai-models')]",
               "properties": {
-                "displayName": "approved-model-name",
-                "value": "[parameters('approvedModelName')]",
+                "displayName": "approved-openai-models",
+                "value": "[parameters('approvedOpenAiModels')]",
                 "secret": false
               }
             },
@@ -868,15 +1049,101 @@
             {
               "type": "Microsoft.ApiManagement/service/backends",
               "apiVersion": "2024-05-01",
-              "name": "[format('{0}/{1}', parameters('apimServiceName'), 'foundry-claude-pilot')]",
+              "name": "[format('{0}/{1}', parameters('apimServiceName'), 'foundry-claude')]",
               "properties": {
                 "protocol": "http",
-                "url": "[parameters('foundryEndpointUrl')]",
+                "url": "[parameters('foundryAnthropicEndpoint')]",
+                "description": "Microsoft Foundry Anthropic Messages endpoint (claude-opus-5, claude-sonnet-5).",
                 "tls": {
                   "validateCertificateChain": true,
                   "validateCertificateName": true
+                },
+                "circuitBreaker": {
+                  "rules": [
+                    {
+                      "name": "claude-transient-failures",
+                      "failureCondition": {
+                        "count": 3,
+                        "interval": "PT1M",
+                        "statusCodeRanges": [
+                          {
+                            "min": 500,
+                            "max": 599
+                          }
+                        ]
+                      },
+                      "tripDuration": "PT1M",
+                      "acceptRetryAfter": true
+                    }
+                  ]
                 }
               }
+            },
+            {
+              "type": "Microsoft.ApiManagement/service/backends",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}', parameters('apimServiceName'), 'foundry-openai')]",
+              "properties": {
+                "protocol": "http",
+                "url": "[parameters('foundryOpenAiEndpoint')]",
+                "description": "Microsoft Foundry OpenAI endpoint (gpt-5.4).",
+                "tls": {
+                  "validateCertificateChain": true,
+                  "validateCertificateName": true
+                },
+                "circuitBreaker": {
+                  "rules": [
+                    {
+                      "name": "openai-transient-failures",
+                      "failureCondition": {
+                        "count": 3,
+                        "interval": "PT1M",
+                        "statusCodeRanges": [
+                          {
+                            "min": 500,
+                            "max": 599
+                          }
+                        ]
+                      },
+                      "tripDuration": "PT1M",
+                      "acceptRetryAfter": true
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "Microsoft.ApiManagement/service/backends",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}', parameters('apimServiceName'), 'content-safety-backend')]",
+              "properties": {
+                "protocol": "http",
+                "url": "[parameters('contentSafetyEndpoint')]",
+                "description": "Azure AI Content Safety, called by the llm-content-safety policy.",
+                "tls": {
+                  "validateCertificateChain": true,
+                  "validateCertificateName": true
+                },
+                "credentials": {
+                  "authorization": {
+                    "scheme": "ManagedIdentity",
+                    "parameter": "https://cognitiveservices.azure.com"
+                  }
+                }
+              }
+            },
+            {
+              "type": "Microsoft.ApiManagement/service/policyFragments",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}', parameters('apimServiceName'), 'content-safety-check')]",
+              "properties": {
+                "description": "Prompt moderation step shared by the Claude and OpenAI operations.",
+                "format": "rawxml",
+                "value": "[if(parameters('enableContentSafety'), variables('$fxv#0'), variables('$fxv#1'))]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/backends', parameters('apimServiceName'), 'content-safety-backend')]"
+              ]
             },
             {
               "type": "Microsoft.ApiManagement/service/apis",
@@ -922,19 +1189,48 @@
               ]
             },
             {
+              "type": "Microsoft.ApiManagement/service/apis",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}', parameters('apimServiceName'), 'openai-chat-api')]",
+              "properties": {
+                "displayName": "OpenAI Chat Completions API (AI Gateway)",
+                "description": "Governed passthrough of the OpenAI Chat Completions API to the Foundry-hosted gpt-5.4 deployment, under the same identity and policy boundary as the Claude surface.",
+                "path": "openai",
+                "protocols": [
+                  "https"
+                ],
+                "subscriptionRequired": false
+              }
+            },
+            {
+              "type": "Microsoft.ApiManagement/service/apis/operations",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}', parameters('apimServiceName'), 'openai-chat-api', 'post-chat-completions')]",
+              "properties": {
+                "displayName": "Create Chat Completion",
+                "method": "POST",
+                "urlTemplate": "/v1/chat/completions",
+                "description": "OpenAI Chat Completions passthrough governed by the same Entra, content-safety, and quota sequence as the Claude surface."
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimServiceName'), 'openai-chat-api')]"
+              ]
+            },
+            {
               "type": "Microsoft.ApiManagement/service/apis/operations/policies",
               "apiVersion": "2024-05-01",
               "name": "[format('{0}/{1}/{2}/{3}', parameters('apimServiceName'), 'anthropic-messages-api', 'post-messages', 'policy')]",
               "properties": {
-                "format": "xml",
-                "value": "[variables('$fxv#0')]"
+                "format": "rawxml",
+                "value": "[variables('$fxv#2')]"
               },
               "dependsOn": [
-                "[resourceId('Microsoft.ApiManagement/service/backends', parameters('apimServiceName'), 'foundry-claude-pilot')]",
+                "[resourceId('Microsoft.ApiManagement/service/backends', parameters('apimServiceName'), 'content-safety-backend')]",
+                "[resourceId('Microsoft.ApiManagement/service/policyFragments', parameters('apimServiceName'), 'content-safety-check')]",
+                "[resourceId('Microsoft.ApiManagement/service/backends', parameters('apimServiceName'), 'foundry-claude')]",
                 "[resourceId('Microsoft.ApiManagement/service/apis/operations', parameters('apimServiceName'), 'anthropic-messages-api', 'post-messages')]",
-                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimServiceName'), 'approved-model-name')]",
-                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimServiceName'), 'backend-forward-timeout')]",
-                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimServiceName'), 'foundry-api-key')]"
+                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimServiceName'), 'approved-claude-models')]",
+                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimServiceName'), 'backend-forward-timeout')]"
               ]
             },
             {
@@ -943,21 +1239,39 @@
               "apiVersion": "2024-05-01",
               "name": "[format('{0}/{1}/{2}/{3}', parameters('apimServiceName'), 'anthropic-messages-api', 'get-models', 'policy')]",
               "properties": {
-                "format": "xml",
-                "value": "[variables('$fxv#1')]"
+                "format": "rawxml",
+                "value": "[variables('$fxv#3')]"
               },
               "dependsOn": [
                 "[resourceId('Microsoft.ApiManagement/service/apis/operations', parameters('apimServiceName'), 'anthropic-messages-api', 'get-models')]",
-                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimServiceName'), 'approved-model-name')]"
+                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimServiceName'), 'approved-claude-models')]",
+                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimServiceName'), 'approved-openai-models')]"
+              ]
+            },
+            {
+              "type": "Microsoft.ApiManagement/service/apis/operations/policies",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}/{3}', parameters('apimServiceName'), 'openai-chat-api', 'post-chat-completions', 'policy')]",
+              "properties": {
+                "format": "rawxml",
+                "value": "[variables('$fxv#4')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/apis/operations', parameters('apimServiceName'), 'openai-chat-api', 'post-chat-completions')]",
+                "[resourceId('Microsoft.ApiManagement/service/backends', parameters('apimServiceName'), 'content-safety-backend')]",
+                "[resourceId('Microsoft.ApiManagement/service/policyFragments', parameters('apimServiceName'), 'content-safety-check')]",
+                "[resourceId('Microsoft.ApiManagement/service/backends', parameters('apimServiceName'), 'foundry-openai')]",
+                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimServiceName'), 'approved-openai-models')]",
+                "[resourceId('Microsoft.ApiManagement/service/namedValues', parameters('apimServiceName'), 'backend-forward-timeout')]"
               ]
             },
             {
               "type": "Microsoft.ApiManagement/service/products",
               "apiVersion": "2024-05-01",
-              "name": "[format('{0}/{1}', parameters('apimServiceName'), 'claude-pilot')]",
+              "name": "[format('{0}/{1}', parameters('apimServiceName'), 'enterprise-ai')]",
               "properties": {
-                "displayName": "Claude Desktop Pilot",
-                "description": "Product grouping the governed Anthropic Messages API for the Claude Desktop pilot group.",
+                "displayName": "Enterprise AI",
+                "description": "Product grouping the governed Claude and OpenAI surfaces for the pilot group.",
                 "subscriptionRequired": false,
                 "state": "published"
               }
@@ -965,10 +1279,19 @@
             {
               "type": "Microsoft.ApiManagement/service/products/apis",
               "apiVersion": "2024-05-01",
-              "name": "[format('{0}/{1}/{2}', parameters('apimServiceName'), 'claude-pilot', 'anthropic-messages-api')]",
+              "name": "[format('{0}/{1}/{2}', parameters('apimServiceName'), 'enterprise-ai', 'anthropic-messages-api')]",
               "dependsOn": [
                 "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimServiceName'), 'anthropic-messages-api')]",
-                "[resourceId('Microsoft.ApiManagement/service/products', parameters('apimServiceName'), 'claude-pilot')]"
+                "[resourceId('Microsoft.ApiManagement/service/products', parameters('apimServiceName'), 'enterprise-ai')]"
+              ]
+            },
+            {
+              "type": "Microsoft.ApiManagement/service/products/apis",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}/{1}/{2}', parameters('apimServiceName'), 'enterprise-ai', 'openai-chat-api')]",
+              "dependsOn": [
+                "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimServiceName'), 'openai-chat-api')]",
+                "[resourceId('Microsoft.ApiManagement/service/products', parameters('apimServiceName'), 'enterprise-ai')]"
               ]
             }
           ],
@@ -980,19 +1303,216 @@
               },
               "value": "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimServiceName'), 'anthropic-messages-api')]"
             },
+            "openAiApiId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the openai-chat-api API."
+              },
+              "value": "[resourceId('Microsoft.ApiManagement/service/apis', parameters('apimServiceName'), 'openai-chat-api')]"
+            },
             "backendId": {
               "type": "string",
               "metadata": {
-                "description": "Backend ID used by the policy set-backend-service step."
+                "description": "Backend ID used by the Claude surface."
               },
-              "value": "foundry-claude-pilot"
+              "value": "foundry-claude"
+            },
+            "openAiBackendId": {
+              "type": "string",
+              "metadata": {
+                "description": "Backend ID used by the OpenAI surface."
+              },
+              "value": "foundry-openai"
             }
           }
         }
       },
       "dependsOn": [
         "[resourceId('Microsoft.Resources/deployments', 'deploy-apim')]",
-        "[resourceId('Microsoft.Resources/deployments', 'deploy-keyvault')]"
+        "[resourceId('Microsoft.Resources/deployments', 'deploy-content-safety')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "deploy-alerts",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "baseName": {
+            "value": "[format('{0}-{1}', parameters('baseName'), parameters('environmentName'))]"
+          },
+          "logAnalyticsWorkspaceId": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-observability'), '2022-09-01').outputs.logAnalyticsWorkspaceId.value]"
+          },
+          "alertEmailAddress": {
+            "value": "[parameters('alertEmailAddress')]"
+          },
+          "tags": {
+            "value": "[variables('tags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.33.93.31351",
+              "templateHash": "11033239091899992761"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region for the alert rules."
+              }
+            },
+            "baseName": {
+              "type": "string",
+              "metadata": {
+                "description": "Base name used to derive alert rule names."
+              }
+            },
+            "logAnalyticsWorkspaceId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the Log Analytics workspace the alerts query."
+              }
+            },
+            "alertEmailAddress": {
+              "type": "string",
+              "metadata": {
+                "description": "Email address that receives alert notifications."
+              }
+            },
+            "tags": {
+              "type": "object",
+              "defaultValue": {},
+              "metadata": {
+                "description": "Tags applied to the alert resources."
+              }
+            }
+          },
+          "variables": {
+            "alertDefinitions": [
+              {
+                "key": "auth-failure-spike",
+                "description": "Spike in gateway 401s — token audience, consent, or named-value drift.",
+                "severity": 2,
+                "query": "ApiManagementGatewayLogs | where ResponseCode == 401 | summarize Count=count() by bin(TimeGenerated, 5m), ApiId | where Count > 25"
+              },
+              {
+                "key": "content-safety-blocks",
+                "description": "Spike in 403s — content-safety denials or model-allowlist rejections.",
+                "severity": 3,
+                "query": "ApiManagementGatewayLogs | where ResponseCode == 403 | summarize Count=count() by bin(TimeGenerated, 5m), ApiId | where Count > 25"
+              },
+              {
+                "key": "quota-exhaustion",
+                "description": "Sustained 429s — per-user token quota exhausted or runaway automation.",
+                "severity": 3,
+                "query": "ApiManagementGatewayLogs | where ResponseCode == 429 | summarize Count=count() by bin(TimeGenerated, 5m), ApiId | where Count > 50"
+              },
+              {
+                "key": "backend-failure",
+                "description": "Backend 5xx rate — Foundry incident or circuit-breaker activation.",
+                "severity": 1,
+                "query": "ApiManagementGatewayLogs | where ResponseCode >= 500 | summarize Count=count() by bin(TimeGenerated, 5m), BackendId | where Count > 10"
+              },
+              {
+                "key": "latency-degradation",
+                "description": "P95 total gateway latency above the interactive budget.",
+                "severity": 3,
+                "query": "ApiManagementGatewayLogs | summarize P95=percentile(TotalTime, 95) by bin(TimeGenerated, 15m), ApiId | where P95 > 60000"
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Insights/actionGroups",
+              "apiVersion": "2023-01-01",
+              "name": "[format('ag-{0}', parameters('baseName'))]",
+              "location": "global",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "groupShortName": "aigw",
+                "enabled": true,
+                "emailReceivers": [
+                  {
+                    "name": "platform-oncall",
+                    "emailAddress": "[parameters('alertEmailAddress')]",
+                    "useCommonAlertSchema": true
+                  }
+                ]
+              }
+            },
+            {
+              "copy": {
+                "name": "alerts",
+                "count": "[length(variables('alertDefinitions'))]"
+              },
+              "type": "Microsoft.Insights/scheduledQueryRules",
+              "apiVersion": "2023-03-15-preview",
+              "name": "[format('alert-{0}-{1}', parameters('baseName'), variables('alertDefinitions')[copyIndex()].key)]",
+              "location": "[parameters('location')]",
+              "tags": "[parameters('tags')]",
+              "properties": {
+                "displayName": "[format('AI Gateway — {0}', variables('alertDefinitions')[copyIndex()].key)]",
+                "description": "[variables('alertDefinitions')[copyIndex()].description]",
+                "severity": "[variables('alertDefinitions')[copyIndex()].severity]",
+                "enabled": true,
+                "scopes": [
+                  "[parameters('logAnalyticsWorkspaceId')]"
+                ],
+                "evaluationFrequency": "PT5M",
+                "windowSize": "PT15M",
+                "criteria": {
+                  "allOf": [
+                    {
+                      "query": "[variables('alertDefinitions')[copyIndex()].query]",
+                      "timeAggregation": "Count",
+                      "operator": "GreaterThan",
+                      "threshold": 0,
+                      "failingPeriods": {
+                        "numberOfEvaluationPeriods": 1,
+                        "minFailingPeriodsToAlert": 1
+                      }
+                    }
+                  ]
+                },
+                "autoMitigate": true,
+                "actions": {
+                  "actionGroups": [
+                    "[resourceId('Microsoft.Insights/actionGroups', format('ag-{0}', parameters('baseName')))]"
+                  ]
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Insights/actionGroups', format('ag-{0}', parameters('baseName')))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "actionGroupId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the action group notified by every alert."
+              },
+              "value": "[resourceId('Microsoft.Insights/actionGroups', format('ag-{0}', parameters('baseName')))]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'deploy-observability')]"
       ]
     }
   ],
@@ -1004,6 +1524,13 @@
       },
       "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-apim'), '2022-09-01').outputs.apimGatewayUrl.value]"
     },
+    "apimServiceName": {
+      "type": "string",
+      "metadata": {
+        "description": "APIM service name (globally unique)."
+      },
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-apim'), '2022-09-01').outputs.apimServiceName.value]"
+    },
     "apimPrincipalId": {
       "type": "string",
       "metadata": {
@@ -1014,9 +1541,16 @@
     "backendId": {
       "type": "string",
       "metadata": {
-        "description": "Backend ID used for the Foundry passthrough (for verification)."
+        "description": "Backend ID used for the Claude passthrough (for verification)."
       },
       "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-apim-policy'), '2022-09-01').outputs.backendId.value]"
+    },
+    "openAiBackendId": {
+      "type": "string",
+      "metadata": {
+        "description": "Backend ID used for the OpenAI passthrough (for verification)."
+      },
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-apim-policy'), '2022-09-01').outputs.openAiBackendId.value]"
     },
     "logAnalyticsWorkspaceId": {
       "type": "string",
@@ -1025,19 +1559,19 @@
       },
       "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-observability'), '2022-09-01').outputs.logAnalyticsWorkspaceId.value]"
     },
-    "keyVaultName": {
+    "contentSafetyName": {
       "type": "string",
       "metadata": {
-        "description": "Key Vault name holding the Foundry API key secret. Run `az keyvault secret set --vault-name <this> --name foundry-api-key --value \"<key>\"` after deployment."
+        "description": "Content Safety account name."
       },
-      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-keyvault'), '2022-09-01').outputs.keyVaultName.value]"
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-content-safety'), '2022-09-01').outputs.contentSafetyName.value]"
     },
-    "keyVaultUri": {
+    "contentSafetyEndpoint": {
       "type": "string",
       "metadata": {
-        "description": "Key Vault URI."
+        "description": "Content Safety endpoint used by the llm-content-safety policy."
       },
-      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-keyvault'), '2022-09-01').outputs.keyVaultUri.value]"
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'deploy-content-safety'), '2022-09-01').outputs.contentSafetyEndpoint.value]"
     }
   }
 }

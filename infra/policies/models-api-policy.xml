@@ -1,10 +1,11 @@
 <!--
-  Claude Governance MVP — GET /v1/models operation policy
-  Optional client-discovery endpoint. Does not call the Foundry backend
-  (Anthropic has no public /v1/models list API) — it simply returns a
-  static JSON document describing the models approved for this
-  gateway ({{approved-model-name}}), still gated by the same Entra token
-  validation used on /v1/messages so it is not an unauthenticated probe.
+  AI Gateway — GET /v1/models operation policy
+  Client-discovery endpoint. Does not call a backend — it returns a static JSON
+  document describing the models this gateway admits, still gated by the same
+  Entra token validation used on /v1/messages so it is not an open probe.
+
+  Claude clients consume this list; the OpenAI models are advertised with their
+  own endpoint path so a caller can discover both surfaces from one place.
 -->
 <policies>
   <inbound>
@@ -14,9 +15,11 @@
         failed-validation-error-message="Missing or invalid access token.">
       <audiences>
         <audience>{{gateway-api-client-id}}</audience>
+        <audience>api://{{gateway-api-client-id}}</audience>
       </audiences>
       <client-application-ids>
         <application-id>{{cowork-client-id}}</application-id>
+        <application-id>{{additional-client-app-id}}</application-id>
       </client-application-ids>
       <required-claims>
         <claim name="scp" match="any" separator=" ">
@@ -30,12 +33,19 @@
         <value>application/json</value>
       </set-header>
       <set-body>@{
-        var approved = &quot;{{approved-model-name}}&quot;.Split(',');
         var models = new JArray();
-        foreach (var m in approved) {
+        foreach (var m in &quot;{{approved-claude-models}}&quot;.Split(',')) {
           models.Add(new JObject(
             new JProperty(&quot;id&quot;, m),
-            new JProperty(&quot;object&quot;, &quot;model&quot;)
+            new JProperty(&quot;object&quot;, &quot;model&quot;),
+            new JProperty(&quot;endpoint&quot;, &quot;/v1/messages&quot;)
+          ));
+        }
+        foreach (var m in &quot;{{approved-openai-models}}&quot;.Split(',')) {
+          models.Add(new JObject(
+            new JProperty(&quot;id&quot;, m),
+            new JProperty(&quot;object&quot;, &quot;model&quot;),
+            new JProperty(&quot;endpoint&quot;, &quot;/openai/v1/chat/completions&quot;)
           ));
         }
         return new JObject(
